@@ -5,8 +5,15 @@ export type PazarHaberi = {
   id: string;
   baslik: string;
   aciklama: string;
+  etki?: string;
   hedefNadirlik: Nadirlik | "tum";
   carpani: number;
+  pazarTeklifCarpani?: number;
+  musteriGelmeCarpani?: number;
+  musteriBeklemeBonus?: number;
+  acikArtirmaBaslangicCarpani?: number;
+  acikArtirmaTalepCarpani?: number;
+  urunPazariFiyatCarpani?: number;
 };
 
 export type EnvanterUrunu = {
@@ -44,6 +51,35 @@ export type KrediBilgisi = {
   odemeGunu: number | null;
 };
 
+export type OyuncuIstatistikleri = {
+  satilanUrunSayisi: number;
+  pazarSohbetSayisi: number;
+  zararSatisSayisi: number;
+  yukseltilenDepoSayisi: number;
+  efsaneSatisSayisi: number;
+};
+
+export type PazarSohbetKisiligi = "hizli" | "nazik" | "supheci" | "sert";
+
+export type PazarSohbetMesaji = {
+  id: string;
+  kimden: "musteri" | "oyuncu" | "sistem";
+  metin: string;
+};
+
+export type PazarSohbetKaydi = {
+  id: string;
+  musteri: string;
+  kisilik: PazarSohbetKisiligi;
+  renk: string;
+  teklif: number;
+  bekleyenTeklif?: number | null;
+  durum: "aktif" | "satildi" | "vazgecti" | "engellendi";
+  beklemeSaniye: number;
+  yaziyorSaniye: number;
+  mesajlar: PazarSohbetMesaji[];
+};
+
 export type PazarSatisKaydi = {
   id: string;
   urun: EnvanterUrunu & { depoId?: string };
@@ -52,6 +88,7 @@ export type PazarSatisKaydi = {
   musteri: string | null;
   durum: "bekliyor" | "teklif" | "vazgecti";
   sonrakiMusteriGunu: number;
+  sohbetler?: PazarSohbetKaydi[];
 };
 
 export type OyunDurumu = {
@@ -68,6 +105,9 @@ export type OyunDurumu = {
   kredi: KrediBilgisi;
   pazarSatislari: PazarSatisKaydi[];
   itibar: number;
+  exp: number;
+  acilanBasarimlar: string[];
+  istatistik: OyuncuIstatistikleri;
   pazarHaberi: PazarHaberi;
 };
 

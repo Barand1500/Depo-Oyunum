@@ -26,10 +26,20 @@ export const ilkOyunDurumu: OyunDurumu = {
   },
   pazarSatislari: [],
   itibar: 35,
+  exp: 0,
+  acilanBasarimlar: [],
+  istatistik: {
+    satilanUrunSayisi: 0,
+    pazarSohbetSayisi: 0,
+    zararSatisSayisi: 0,
+    yukseltilenDepoSayisi: 0,
+    efsaneSatisSayisi: 0
+  },
   pazarHaberi: {
     id: "haber-baslangic",
     baslik: "Sakin Pazar",
     aciklama: "Bugün piyasada büyük dalga yok. Dengeli fiyatlar bekleniyor.",
+    etki: "Tüm fiyatlar normal seyrinde.",
     hedefNadirlik: "tum",
     carpani: 1
   }

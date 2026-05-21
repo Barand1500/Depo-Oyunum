@@ -1,6 +1,6 @@
-import type { EnvanterUrunu, Nadirlik } from "./oyunTipleri";
+import type { EnvanterUrunu, Nadirlik, PazarSohbetKaydi } from "./oyunTipleri";
 
-export type Sahne = "ana" | "pazar" | "urunPazari" | "envanter" | "acikArtirma" | "depo" | "depoKur" | "depoUrunEkle" | "profil" | "depoSatis" | "gunSonu";
+export type Sahne = "ana" | "pazar" | "urunPazari" | "envanter" | "acikArtirma" | "depo" | "depoKur" | "depoUrunEkle" | "profil" | "basarimlar" | "depoSatis" | "pazarSohbet" | "gunSonu";
 export type TeklifSahibi = "oyuncu" | string | null;
 export type EnvanterSekmesi = "depolar" | "urunler";
 export type SaticiRolu = "hizli" | "normal" | "sabirli" | "inatci";
@@ -14,6 +14,12 @@ export type AliciProfili = {
   renk: string;
   butceCarpani: number;
   hedefNadirlikler?: Nadirlik[];
+};
+
+export type AktifPazarSohbeti = {
+  satisId: string;
+  sohbetId: string;
+  sohbet: PazarSohbetKaydi;
 };
 
 export type KaynakliUrun = EnvanterUrunu & {

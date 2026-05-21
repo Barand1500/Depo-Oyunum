@@ -1,7 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Animated,
+  Image,
+  ImageBackground,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -13,12 +16,144 @@ import {
 
 import { DepoyaEklenecekUrunKarti } from "../bilesenler/DepoyaEklenecekUrunKarti";
 import { UrunKutusu } from "../bilesenler/UrunKutusu";
-import type { AcikArtirmaDurumu, DepoSatisDurumu, EnvanterSekmesi, KaynakliUrun, PazarDeposu, PazarUrunu, Sahne, SatisTeklifi, TeklifSahibi } from "../tipler/ekranTipleri";
-import type { DepoKaydi, OyunDurumu } from "../tipler/oyunTipleri";
+import type { AcikArtirmaDurumu, AktifPazarSohbeti, DepoSatisDurumu, EnvanterSekmesi, KaynakliUrun, PazarDeposu, PazarUrunu, Sahne, SatisTeklifi, TeklifSahibi } from "../tipler/ekranTipleri";
+import type { DepoKaydi, OyunDurumu, PazarSatisKaydi, PazarSohbetKaydi, PazarSohbetKisiligi, PazarSohbetMesaji } from "../tipler/oyunTipleri";
 import { AKSIYON_SURELERI, GERCEK_ZAMAN_ARALIGI_MS, GERCEK_ZAMAN_OYUN_DAKIKASI, GUN_BASLANGIC_DAKIKA, GUN_BITIS_DAKIKA, aliciProfilleri, avatarRenkleri, depoKaliteAyarlari, isimHavuzu, krediTutarlari, saticiIsimleri } from "../veri/ekranSabitleri";
 import { KAYIT_ANAHTARI, ilkOyunDurumu, nadirlikAyarlari } from "../veri/oyunVerisi";
-import { depoKaliteAyari, depoKaliteSeviyesi, erkenOdemeIndirimiHesapla, haberCarpani, itibarEtiketi, itibarSinirla, katilimcilariOlustur, liderAdi, oyunuDuzenle, pazarDepolariOlustur, pazarHaberiOlustur, profilBasHarfleri, saatYaz, saticiCevapSuresi, sayiArasi, sureYaz, tarihYaz, teklifOku, urunGecmisiEkle, urunIkonuSec, urunPazariOlustur } from "../yardimcilar/ekranYardimcilari";
+import { depoKaliteAyari, depoKaliteSeviyesi, erkenOdemeIndirimiHesapla, haberBeklemeSaniyesi, haberCarpani, haberMusteriGelmeSansi, haberTeklifCarpani, itibarEtiketi, itibarSinirla, katilimcilariOlustur, liderAdi, oyunuDuzenle, pazarDepolariOlustur, pazarHaberiOlustur, profilBasHarfleri, saatYaz, saticiCevapSuresi, sayiArasi, sureYaz, tarihYaz, teklifOku, urunGecmisiEkle, urunIkonuSec, urunPazariOlustur } from "../yardimcilar/ekranYardimcilari";
 import { paraYaz } from "../yardimcilar/para";
+
+type BasarimTanim = {
+  id: string;
+  baslik: string;
+  aciklama: string;
+  hedef: number;
+  exp: number;
+  kilitli?: boolean;
+  gizli?: boolean;
+  ilerleme: (durum: OyunDurumu) => number;
+};
+
+const EXP_SEVIYE_ESIGI = 100;
+const SEVIYE_ITIBAR_ODULU = 2;
+
+const basarimTanimlari: BasarimTanim[] = [
+  { id: "ilk-depo", baslik: "İlk Kilit Açıldı", aciklama: "İlk deponu aç.", hedef: 1, exp: 20, ilerleme: (durum) => durum.acilanDepo },
+  { id: "depo-avcisi", baslik: "Depo Avcısı", aciklama: "5 depo aç.", hedef: 5, exp: 45, ilerleme: (durum) => durum.acilanDepo },
+  { id: "ilk-satis", baslik: "İlk Satış", aciklama: "İlk ürün satışını tamamla.", hedef: 1, exp: 25, ilerleme: (durum) => durum.istatistik.satilanUrunSayisi },
+  { id: "pazar-ustasi", baslik: "Pazar Ustası", aciklama: "10 ürün sat.", hedef: 10, exp: 70, ilerleme: (durum) => durum.istatistik.satilanUrunSayisi },
+  { id: "sohbetci", baslik: "Sohbeti Seven", aciklama: "5 müşteri sohbeti aç.", hedef: 5, exp: 35, ilerleme: (durum) => durum.istatistik.pazarSohbetSayisi },
+  { id: "riskli-karar", baslik: "Riskli Karar", aciklama: "1 ürünü zararına sat.", hedef: 1, exp: 20, kilitli: true, ilerleme: (durum) => durum.istatistik.zararSatisSayisi },
+  { id: "kalite-isleri", baslik: "Kalite İşleri", aciklama: "Bir kendi deponu yükselt.", hedef: 1, exp: 40, ilerleme: (durum) => durum.istatistik.yukseltilenDepoSayisi },
+  { id: "premium-sahibi", baslik: "Premium Depocu", aciklama: "Premium kaliteye ulaşan bir depon olsun.", hedef: 1, exp: 80, kilitli: true, ilerleme: (durum) => durum.sahipDepolar.some((depo) => depo.kaliteSeviyesi === 3) ? 1 : 0 },
+  { id: "binlik-kasa", baslik: "Binlik Kasa", aciklama: "Toplam 1.000 TL kazanç yap.", hedef: 1000, exp: 55, ilerleme: (durum) => durum.toplamKazanc },
+  { id: "efsane-satis", baslik: "Efsane Satıcı", aciklama: "1 efsane ürünü sat.", hedef: 1, exp: 90, gizli: true, ilerleme: (durum) => durum.istatistik.efsaneSatisSayisi },
+  { id: "guvenilir", baslik: "Güvenilir İsim", aciklama: "80 itibara ulaş.", hedef: 80, exp: 75, kilitli: true, ilerleme: (durum) => durum.itibar },
+  { id: "kariyer", baslik: "Kariyer Başlangıcı", aciklama: "250 TL net kâra ulaş.", hedef: 250, exp: 50, ilerleme: (durum) => Math.max(0, durum.toplamKazanc - durum.toplamHarcama) }
+];
+
+function basarimIlerlemesi(tanim: BasarimTanim, durum: OyunDurumu) {
+  return Math.max(0, Math.min(tanim.hedef, tanim.ilerleme(durum)));
+}
+
+function expBilgisi(exp: number) {
+  const seviye = Math.floor(exp / EXP_SEVIYE_ESIGI) + 1;
+  const mevcut = exp % EXP_SEVIYE_ESIGI;
+  return { seviye, mevcut, hedef: EXP_SEVIYE_ESIGI, oran: mevcut / EXP_SEVIYE_ESIGI };
+}
+
+function basarimIlerlemeMetni(tanim: BasarimTanim, ilerleme: number) {
+  if (tanim.id === "binlik-kasa" || tanim.id === "kariyer") return `${paraYaz(ilerleme)} / ${paraYaz(tanim.hedef)}`;
+  return `${Math.round(ilerleme)} / ${tanim.hedef}`;
+}
+
+const ekranGorselleri = {
+  ana: require("../resimler/Ana Sayfa.png"),
+  profil: require("../resimler/Profil Ekranı.png"),
+  envanter: require("../resimler/Envanter.png"),
+  depoPazari: require("../resimler/Depo Pazarı.png"),
+  canliAcikArtirma: require("../resimler/Canlı Açık Artırma.png"),
+  depoAcma: require("../resimler/Depo Açma.png"),
+  urunPazari: require("../resimler/Ürün Pazarı.png"),
+  depoSatis: require("../resimler/Depo Satışı Mini Game.png"),
+  gunSonu: require("../resimler/Gün Sonu.png"),
+  finans: require("../resimler/Finans Paneli İçin Ek Görsel.png"),
+  bos: require("../resimler/Placeholder Görseli.png"),
+  header: require("../resimler/Header Arka Plan.png")
+};
+
+const pazarSohbetKisilikleri: Array<{ tip: PazarSohbetKisiligi; renk: string; acilis: string; kabul: string; red: string; bekleme: string; pazarlik: string }> = [
+  { tip: "hizli", renk: "#1fa855", acilis: "Selam {ad}, {urun} için teklifim {teklif}. Hızlı dönersen bugün alırım.", kabul: "Tamamdır, hızlıca kapatalım.", red: "O rakama çıkmam, işim gücüm var.", bekleme: "Nerede kaldın? Bekletilmeyi sevmem.", pazarlik: "Hadi kardeşim, son rakamı net söyle." },
+  { tip: "nazik", renk: "#4f8cff", acilis: "Merhaba {ad}, {urun} ilgimi çekti. {teklif} teklif etmek isterim.", kabul: "Anlaştık, iyi alışveriş oldu.", red: "Nazikçe pas geçeyim, bütçemi aşıyor.", bekleme: "Müsait olduğunda haber ver, çok bekleyemem.", pazarlik: "Biraz daha yaklaşabilirsek anlaşırız." },
+  { tip: "supheci", renk: "#c084fc", acilis: "{ad}, ürün temizse {teklif} veririm. Ama beni yanıltma.", kabul: "Tamam, güveniyorum. Satışı bitirelim.", red: "Bu iş bana pahalı geldi, vazgeçiyorum.", bekleme: "Sessizlik iyi işaret değil. Hâlâ orada mısın?", pazarlik: "Bizi mi deniyorsun? Mantıklı rakam yaz." },
+  { tip: "sert", renk: "#ef6f4d", acilis: "Bak {ad}, {urun} için {teklif} veririm. Çok uzatma.", kabul: "Tamam, aldım gitti.", red: "Yok, o para etmez. Ben çıktım.", bekleme: "Bekletme beni. Başka ürüne geçerim.", pazarlik: "Lan piyasa belli, uçma." }
+];
+
+const gorselKaynaklari = Object.values(ekranGorselleri);
+
+function pazarMesajiOlustur(kimden: PazarSohbetMesaji["kimden"], metin: string): PazarSohbetMesaji {
+  return { id: `mesaj-${Date.now()}-${Math.random()}`, kimden, metin };
+}
+
+function pazarSohbetMetni(sablon: string, ad: string, urun: string, teklif: number) {
+  return sablon
+    .replace("{ad}", ad.trim() || "usta")
+    .replace("{urun}", urun)
+    .replace("{teklif}", paraYaz(teklif));
+}
+
+function pazarSohbetiOlustur(urun: KaynakliUrun | PazarSatisKaydi["urun"], teklif: number, oyuncuAdi: string, kullanilanIsimler: string[] = [], beklemeSaniye = sayiArasi(38, 58)): PazarSohbetKaydi {
+  const kisilik = pazarSohbetKisilikleri[sayiArasi(0, pazarSohbetKisilikleri.length - 1)];
+  const adayIsimler = saticiIsimleri.filter((isim) => !kullanilanIsimler.includes(isim));
+  const musteri = adayIsimler.length > 0 ? adayIsimler[sayiArasi(0, adayIsimler.length - 1)] : saticiIsimleri[sayiArasi(0, saticiIsimleri.length - 1)];
+
+  return {
+    id: `sohbet-${Date.now()}-${Math.random()}`,
+    musteri,
+    kisilik: kisilik.tip,
+    renk: kisilik.renk,
+    teklif,
+    bekleyenTeklif: null,
+    durum: "aktif",
+    beklemeSaniye,
+    yaziyorSaniye: 0,
+    mesajlar: [pazarMesajiOlustur("musteri", pazarSohbetMetni(kisilik.acilis, oyuncuAdi, urun.isim, teklif))]
+  };
+}
+
+function pazarSohbetKisiligiBul(tip: PazarSohbetKisiligi) {
+  return pazarSohbetKisilikleri.find((kisilik) => kisilik.tip === tip) ?? pazarSohbetKisilikleri[0];
+}
+
+function pazarOyuncuTeklifMesaji(yeniTeklif: number, mevcutTeklif: number) {
+  const artis = yeniTeklif - mevcutTeklif;
+  const mesajlar = artis > mevcutTeklif * 0.28
+    ? [`${paraYaz(yeniTeklif)} veriyorum, bu ürün için ciddiysen anlaşalım.`, `Fazla uzatmayalım, ${paraYaz(yeniTeklif)} iyi rakam.`, `${paraYaz(yeniTeklif)} son güçlü teklifim, kabul edersen kapatıyorum.`]
+    : [`${paraYaz(yeniTeklif)} yapalım, ürünü sana ayırayım.`, `Biraz daha yaklaş: ${paraYaz(yeniTeklif)} olursa konuşuruz.`, `${paraYaz(yeniTeklif)} teklif ediyorum, ne diyorsun?`];
+
+  return mesajlar[sayiArasi(0, mesajlar.length - 1)];
+}
+
+function pazarMusteriCevabiOlustur(kisilik: ReturnType<typeof pazarSohbetKisiligiBul>, kabulEtti: boolean, yeniTeklif: number, urunIsmi: string) {
+  const teklifMetni = paraYaz(yeniTeklif);
+
+  const kabulCevaplari: Record<PazarSohbetKisiligi, string[]> = {
+    hizli: [`Tamam ${teklifMetni} olur. ${urunIsmi} için daha fazla vakit kaybetmeyelim.`, `Okey, ${teklifMetni} yazdım. Hızlı kapatırsan alıyorum.`, `Anlaştık, ${teklifMetni} benim için tamam.`],
+    nazik: [`Bence ${teklifMetni} adil oldu. Satışı kapatabiliriz.`, `Teşekkürler, ${teklifMetni} benim için uygun.`, `Tamamdır, ${urunIsmi} için ${teklifMetni} kabulümdür.`],
+    supheci: [`Peki, ${teklifMetni} veririm ama ürün anlattığın gibiyse.`, `${teklifMetni} tamam, sonradan sürpriz çıkmasın.`, `Bu rakamla risk alırım. ${teklifMetni} benden.`],
+    sert: [`Tamam, ${teklifMetni}. Daha da çıkmam.`, `${teklifMetni} son. Kabul ediyorsan kapat.`, `Olur, ${teklifMetni} veriyorum. Uzatma artık.`]
+  };
+
+  const pazarlikCevaplari: Record<PazarSohbetKisiligi, string[]> = {
+    hizli: [`Hadi kardeşim, ${teklifMetni} vereyim hızlı bitsin.`, `O kadar çıkmam. ${teklifMetni} yaparım, karar ver.`, `Ben hızlı alıcıyım ama kör değilim. ${teklifMetni}.`],
+    nazik: [`Biraz yüksek kaldı. Ben ${teklifMetni} seviyesine gelebilirim.`, `Bütçemi çok zorluyor. ${teklifMetni} benim son rahat rakamım.`, `Orta noktada buluşalım, ${teklifMetni} teklif edeyim.`],
+    supheci: [`Sen bizi mi deniyorsun? ${teklifMetni} üstü bana mantıklı değil.`, `Fotoğrafa göre risk var. ${teklifMetni} veririm, fazlası zor.`, `Bana güven vermen lazım. Şimdilik ${teklifMetni}.`],
+    sert: [`Lan o rakam uçmuş. ${teklifMetni} veririm, fazla konuşmam.`, `Piyasa belli. ${teklifMetni} üstüne çıkmam.`, `Zorlama beni, ${teklifMetni} son teklif.`]
+  };
+
+  const cevaplar = kabulEtti ? kabulCevaplari[kisilik.tip] : pazarlikCevaplari[kisilik.tip];
+  return cevaplar[sayiArasi(0, cevaplar.length - 1)];
+}
 
 export default function AnaOyunEkrani() {
   const [oyunDurumu, setOyunDurumu] = useState<OyunDurumu>(ilkOyunDurumu);
@@ -38,6 +173,17 @@ export default function AnaOyunEkrani() {
   const [depoIsimMetni, setDepoIsimMetni] = useState("Benim Depom");
   const [bankaAcik, setBankaAcik] = useState(false);
   const [urunEklenecekDepoId, setUrunEklenecekDepoId] = useState<string | null>(null);
+  const [pazarSohbetSatisId, setPazarSohbetSatisId] = useState<string | null>(null);
+  const [aktifPazarSohbetId, setAktifPazarSohbetId] = useState<string | null>(null);
+  const [pazarlikMetni, setPazarlikMetni] = useState("");
+  const expAnimasyonu = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    gorselKaynaklari.forEach((kaynak) => {
+      const uri = Image.resolveAssetSource(kaynak).uri;
+      if (uri) void Image.prefetch(uri);
+    });
+  }, []);
 
   useEffect(() => {
     async function oyunuYukle() {
@@ -78,7 +224,62 @@ export default function AnaOyunEkrani() {
     ...depoUrunleri
   ];
   const bildirimSayisi = oyunDurumu.pazarSatislari.filter((satis) => satis.durum === "teklif").length;
+  const aktifPazarSatisi = oyunDurumu.pazarSatislari.find((satis) => satis.id === pazarSohbetSatisId) ?? null;
+  const aktifSohbetKaydi = aktifPazarSatisi?.sohbetler?.find((sohbet) => sohbet.id === aktifPazarSohbetId) ?? aktifPazarSatisi?.sohbetler?.[0] ?? null;
+  const aktifPazarSohbeti: AktifPazarSohbeti | null = aktifPazarSatisi && aktifSohbetKaydi
+    ? {
+      satisId: aktifPazarSatisi.id,
+      sohbetId: aktifSohbetKaydi.id,
+      sohbet: aktifSohbetKaydi
+    }
+    : null;
   const satilmisKayitSayisi = envanterUrunleri.filter((urun) => urun.satildi).length + oyunDurumu.sahipDepolar.filter((depo) => depo.urunler.length > 0 && depo.urunler.every((urun) => urun.satildi)).length;
+  const expDurumu = expBilgisi(oyunDurumu.exp);
+  const sonrakiItibarExp = expDurumu.hedef - expDurumu.mevcut;
+  const expDolguGenisligi = expAnimasyonu.interpolate({ inputRange: [0, 1], outputRange: ["0%", "100%"] });
+  const basarimKartlari = basarimTanimlari.map((tanim) => {
+    const ilerleme = basarimIlerlemesi(tanim, oyunDurumu);
+    const acildi = oyunDurumu.acilanBasarimlar.includes(tanim.id);
+    return {
+      ...tanim,
+      mevcutIlerleme: ilerleme,
+      oran: tanim.hedef <= 0 ? 1 : ilerleme / tanim.hedef,
+      acildi
+    };
+  });
+  const acilanBasarimSayisi = basarimKartlari.filter((basarim) => basarim.acildi).length;
+
+  useEffect(() => {
+    Animated.timing(expAnimasyonu, {
+      toValue: expDurumu.oran,
+      duration: 700,
+      useNativeDriver: false
+    }).start();
+  }, [expAnimasyonu, expDurumu.oran]);
+
+  useEffect(() => {
+    if (!yuklendi) return;
+
+    const yeniBasarimlar = basarimTanimlari.filter((tanim) => !oyunDurumu.acilanBasarimlar.includes(tanim.id) && basarimIlerlemesi(tanim, oyunDurumu) >= tanim.hedef);
+    if (yeniBasarimlar.length === 0) return;
+
+    const expOdulu = yeniBasarimlar.reduce((toplam, basarim) => toplam + basarim.exp, 0);
+
+    setOyunDurumu((mevcutDurum) => {
+      const eskiSeviye = expBilgisi(mevcutDurum.exp).seviye;
+      const yeniExp = mevcutDurum.exp + expOdulu;
+      const yeniSeviye = expBilgisi(yeniExp).seviye;
+      const seviyeFarki = Math.max(0, yeniSeviye - eskiSeviye);
+
+      return {
+        ...mevcutDurum,
+        exp: yeniExp,
+        itibar: itibarSinirla(mevcutDurum.itibar + seviyeFarki * SEVIYE_ITIBAR_ODULU),
+        acilanBasarimlar: [...new Set([...mevcutDurum.acilanBasarimlar, ...yeniBasarimlar.map((basarim) => basarim.id)])]
+      };
+    });
+    setSonMesaj(`${yeniBasarimlar[0].baslik} başarımı açıldı. +${expOdulu} EXP kazandın.`);
+  }, [oyunDurumu, yuklendi]);
   const depoyaEklenebilirUrunler = urunEklenecekDepo
     ? envanterUrunleri.filter((urun) => !urun.satildi && urun.depoId !== urunEklenecekDepo.id && !oyunDurumu.pazarSatislari.some((satis) => satis.urun.id === urun.id))
     : [];
@@ -125,7 +326,7 @@ export default function AnaOyunEkrani() {
           ...satis,
           durum: "teklif",
           musteri: saticiIsimleri[sayiArasi(0, saticiIsimleri.length - 1)],
-          teklif: Math.max(1, Math.round(satis.urun.deger * sayiArasi(45, 92) / 100))
+          teklif: Math.max(1, Math.round(satis.urun.deger * haberTeklifCarpani(satis.urun, mevcutDurum.pazarHaberi) * sayiArasi(45, 92) / 100))
         }
         : satis)
     }));
@@ -133,18 +334,18 @@ export default function AnaOyunEkrani() {
   }, []);
 
   const acikArtirmayaGir = useCallback(() => {
-    const yeniPazar = pazarDepolariOlustur();
+    const yeniPazar = pazarDepolariOlustur(oyunDurumu.pazarHaberi);
 
     zamanIlerle(AKSIYON_SURELERI.depoPazarinaGit);
     setPazarDepolari(yeniPazar);
     setSeciliPazarDeposuId(yeniPazar[0]?.id ?? null);
     setSahne("pazar");
-  }, [zamanIlerle]);
+  }, [oyunDurumu.pazarHaberi, zamanIlerle]);
 
   const urunPazarinaGir = useCallback(() => {
-    setPazarUrunleri(urunPazariOlustur());
+    setPazarUrunleri(urunPazariOlustur(oyunDurumu.pazarHaberi));
     setSahne("urunPazari");
-  }, []);
+  }, [oyunDurumu.pazarHaberi]);
 
   const urunTeklifMetniGuncelle = useCallback((urunId: string, teklifMetni: string) => {
     setPazarUrunleri((mevcutUrunler) => mevcutUrunler.map((pazarUrunu) => pazarUrunu.id === urunId
@@ -385,6 +586,79 @@ export default function AnaOyunEkrani() {
     return () => clearInterval(cevapSayaci);
   }, [oyunDurumu.para, sahne]);
 
+  useEffect(() => {
+    const sohbetSayaci = setInterval(() => {
+      setOyunDurumu((mevcutDurum) => ({
+        ...mevcutDurum,
+        pazarSatislari: mevcutDurum.pazarSatislari.map((satis) => {
+          if (satis.durum !== "teklif") return satis;
+
+          let sohbetler: PazarSohbetKaydi[] = (satis.sohbetler ?? []).map((sohbet): PazarSohbetKaydi => {
+            if (sohbet.durum !== "aktif") return sohbet;
+
+            const seciliMi = sahne === "pazarSohbet" && satis.id === pazarSohbetSatisId && sohbet.id === aktifPazarSohbetId;
+
+            if (sohbet.yaziyorSaniye > 1) {
+              return { ...sohbet, yaziyorSaniye: sohbet.yaziyorSaniye - 1 };
+            }
+
+            if (sohbet.yaziyorSaniye === 1) {
+              const kisilik = pazarSohbetKisiligiBul(sohbet.kisilik);
+              const bekleyenTeklif = sohbet.bekleyenTeklif ?? sohbet.teklif;
+              const kabulSiniri = Math.round(satis.urun.deger * (sohbet.kisilik === "hizli" ? 0.86 : sohbet.kisilik === "sert" ? 0.72 : sohbet.kisilik === "supheci" ? 0.8 : 0.9));
+              const kabulEtti = bekleyenTeklif <= kabulSiniri || Math.random() < 0.22;
+              const yeniTeklif = kabulEtti ? bekleyenTeklif : Math.max(sohbet.teklif, Math.round((sohbet.teklif + bekleyenTeklif) / 2));
+              const cevap = pazarMesajiOlustur("musteri", pazarMusteriCevabiOlustur(kisilik, kabulEtti, yeniTeklif, satis.urun.isim));
+
+              return {
+                ...sohbet,
+                teklif: yeniTeklif,
+                bekleyenTeklif: null,
+                yaziyorSaniye: 0,
+                beklemeSaniye: haberBeklemeSaniyesi(38, 58, mevcutDurum.pazarHaberi),
+                mesajlar: [...sohbet.mesajlar, cevap].slice(-18)
+              };
+            }
+
+            if (seciliMi) return sohbet;
+
+            const yeniBekleme = sohbet.beklemeSaniye - 1;
+            if (yeniBekleme === 12) {
+              const kisilik = pazarSohbetKisiligiBul(sohbet.kisilik);
+              return { ...sohbet, beklemeSaniye: yeniBekleme, mesajlar: [...sohbet.mesajlar, pazarMesajiOlustur("musteri", kisilik.bekleme)].slice(-18) };
+            }
+
+            if (yeniBekleme <= 0) {
+              const kisilik = pazarSohbetKisiligiBul(sohbet.kisilik);
+              return { ...sohbet, durum: "vazgecti", beklemeSaniye: 0, mesajlar: [...sohbet.mesajlar, pazarMesajiOlustur("musteri", kisilik.red)].slice(-18) };
+            }
+
+            return { ...sohbet, beklemeSaniye: yeniBekleme };
+          });
+
+          const aktifSohbetSayisi = sohbetler.filter((sohbet) => sohbet.durum === "aktif").length;
+          if (aktifSohbetSayisi < 3 && Math.random() < haberMusteriGelmeSansi(0.035, mevcutDurum.pazarHaberi)) {
+            const oyuncuAdi = mevcutDurum.profil.ad.trim() || "usta";
+            const yeniTeklif = Math.max(1, Math.round(satis.urun.deger * haberTeklifCarpani(satis.urun, mevcutDurum.pazarHaberi) * sayiArasi(48, 88) / 100));
+            sohbetler = [pazarSohbetiOlustur(satis.urun, yeniTeklif, oyuncuAdi, sohbetler.map((sohbet) => sohbet.musteri), haberBeklemeSaniyesi(38, 58, mevcutDurum.pazarHaberi)), ...sohbetler].slice(0, 5);
+          }
+
+          const enIyiAktifSohbet = sohbetler.filter((sohbet) => sohbet.durum === "aktif").sort((a, b) => b.teklif - a.teklif)[0] ?? null;
+
+          return {
+            ...satis,
+            teklif: enIyiAktifSohbet?.teklif ?? satis.teklif,
+            musteri: enIyiAktifSohbet?.musteri ?? satis.musteri,
+            sohbetler,
+            durum: sohbetler.some((sohbet) => sohbet.durum === "aktif") ? "teklif" as const : "vazgecti" as const
+          };
+        })
+      }));
+    }, 1000);
+
+    return () => clearInterval(sohbetSayaci);
+  }, [aktifPazarSohbetId, pazarSohbetSatisId, sahne]);
+
   const rakipleriCalistir = useCallback((oyuncuTeklifi: number, mevcutArtirma: AcikArtirmaDurumu) => {
     let yeniTeklif = oyuncuTeklifi;
     let yeniLider: TeklifSahibi = "oyuncu";
@@ -562,6 +836,11 @@ export default function AnaOyunEkrani() {
       para: mevcutDurum.para + satisDegeri,
       toplamKazanc: mevcutDurum.toplamKazanc + satisDegeri,
       itibar: itibarSinirla(mevcutDurum.itibar + 1),
+      istatistik: {
+        ...mevcutDurum.istatistik,
+        satilanUrunSayisi: mevcutDurum.istatistik.satilanUrunSayisi + 1,
+        efsaneSatisSayisi: mevcutDurum.istatistik.efsaneSatisSayisi + (urun.nadirlik === "efsane" ? 1 : 0)
+      },
       envanter: urun.depoId ? mevcutDurum.envanter : mevcutDurum.envanter.filter((envanterUrunu) => envanterUrunu.id !== urun.id),
       sahipDepolar: mevcutDurum.sahipDepolar.map((depo) => depo.id === urun.depoId
         ? { ...depo, urunler: depo.urunler.map((depoUrunu) => depoUrunu.id === urun.id ? { ...depoUrunu, satildi: true } : depoUrunu) }
@@ -666,6 +945,10 @@ export default function AnaOyunEkrani() {
       ...mevcutDurum,
       para: mevcutDurum.para - mevcutAyar.sonrakiUcret,
       toplamHarcama: mevcutDurum.toplamHarcama + mevcutAyar.sonrakiUcret,
+      istatistik: {
+        ...mevcutDurum.istatistik,
+        yukseltilenDepoSayisi: mevcutDurum.istatistik.yukseltilenDepoSayisi + 1
+      },
       sahipDepolar: mevcutDurum.sahipDepolar.map((depoKaydi) => depoKaydi.id === depoId
         ? { ...depoKaydi, kaliteSeviyesi: yeniSeviye, kalite: yeniAyar.kalite }
         : depoKaydi)
@@ -675,7 +958,9 @@ export default function AnaOyunEkrani() {
 
   const pazaraKoy = useCallback((urun: KaynakliUrun) => {
     const itibarCarpani = 0.92 + oyunDurumu.itibar / 250;
-    const teklif = Math.max(1, Math.round(urun.deger * haberCarpani(urun, oyunDurumu.pazarHaberi) * itibarCarpani * sayiArasi(45, 90) / 100));
+    const teklif = Math.max(1, Math.round(urun.deger * haberTeklifCarpani(urun, oyunDurumu.pazarHaberi) * itibarCarpani * sayiArasi(45, 90) / 100));
+    const oyuncuAdi = oyunDurumu.profil.ad.trim() || "usta";
+    const ilkSohbet = pazarSohbetiOlustur(urun, teklif, oyuncuAdi, [], haberBeklemeSaniyesi(38, 58, oyunDurumu.pazarHaberi));
 
     setOyunDurumu((mevcutDurum) => ({
       ...mevcutDurum,
@@ -684,34 +969,149 @@ export default function AnaOyunEkrani() {
         urun,
         kaynak: urun.kaynak,
         teklif,
-        musteri: saticiIsimleri[sayiArasi(0, saticiIsimleri.length - 1)],
+        musteri: ilkSohbet.musteri,
         durum: "teklif",
-        sonrakiMusteriGunu: mevcutDurum.gun
+        sonrakiMusteriGunu: mevcutDurum.gun,
+        sohbetler: [ilkSohbet]
       }, ...mevcutDurum.pazarSatislari.filter((satis) => satis.urun.id !== urun.id)]
     }));
     zamanIlerle(AKSIYON_SURELERI.pazaraKoy);
-    setSonMesaj(`${urun.isim} pazara koyuldu. Envanterde yeni teklif bildirimi var.`);
-  }, [oyunDurumu.itibar, oyunDurumu.pazarHaberi, zamanIlerle]);
+    setSonMesaj(`${urun.isim} pazara koyuldu. ${ilkSohbet.musteri} sohbetten teklif gönderdi.`);
+  }, [oyunDurumu.itibar, oyunDurumu.pazarHaberi, oyunDurumu.profil.ad, zamanIlerle]);
 
-  const pazarTeklifiniKabulEt = useCallback((satisId: string) => {
+  const pazarTeklifiniKabulEt = useCallback((satisId: string, sohbetId?: string) => {
     const satis = oyunDurumu.pazarSatislari.find((kayit) => kayit.id === satisId);
-    if (!satis || satis.teklif === null) return;
+    const sohbet = sohbetId ? satis?.sohbetler?.find((kayit) => kayit.id === sohbetId) : null;
+    const teklif = sohbet?.teklif ?? satis?.teklif ?? null;
+    if (!satis || teklif === null) return;
 
     setOyunDurumu((mevcutDurum) => ({
       ...mevcutDurum,
-      para: mevcutDurum.para + (satis.teklif ?? 0),
-      toplamKazanc: mevcutDurum.toplamKazanc + (satis.teklif ?? 0),
+      para: mevcutDurum.para + teklif,
+      toplamKazanc: mevcutDurum.toplamKazanc + teklif,
       itibar: itibarSinirla(mevcutDurum.itibar + 2),
+      istatistik: {
+        ...mevcutDurum.istatistik,
+        satilanUrunSayisi: mevcutDurum.istatistik.satilanUrunSayisi + 1,
+        efsaneSatisSayisi: mevcutDurum.istatistik.efsaneSatisSayisi + (satis.urun.nadirlik === "efsane" ? 1 : 0)
+      },
       pazarSatislari: mevcutDurum.pazarSatislari.filter((kayit) => kayit.id !== satisId),
       envanter: satis.urun.depoId ? mevcutDurum.envanter : mevcutDurum.envanter.filter((urun) => urun.id !== satis.urun.id),
       sahipDepolar: mevcutDurum.sahipDepolar.map((depo) => depo.id === satis.urun.depoId
         ? { ...depo, urunler: depo.urunler.map((urun) => urun.id === satis.urun.id ? { ...urun, satildi: true } : urun) }
         : depo)
     }));
-    setSonMesaj(`${satis.urun.isim} pazarda ${paraYaz(satis.teklif)} teklifine satıldı.`);
+    setPazarSohbetSatisId(null);
+    setAktifPazarSohbetId(null);
+    setSahne("envanter");
+    setSonMesaj(`${satis.urun.isim} ${sohbet?.musteri ?? satis.musteri ?? "müşteri"} alıcısına ${paraYaz(teklif)} teklifine satıldı.`);
   }, [oyunDurumu.pazarSatislari]);
 
+  const pazarSatisiniIptalEt = useCallback((satisId: string) => {
+    setOyunDurumu((mevcutDurum) => ({
+      ...mevcutDurum,
+      pazarSatislari: mevcutDurum.pazarSatislari.filter((satis) => satis.id !== satisId)
+    }));
+    setSonMesaj("Pazar ilanı iptal edildi. Ürün envanterde kalıyor.");
+  }, []);
+
+  const pazarZararinaSat = useCallback((satisId: string) => {
+    const satis = oyunDurumu.pazarSatislari.find((kayit) => kayit.id === satisId);
+    if (!satis) return;
+
+    const satisDegeri = Math.max(1, Math.round(satis.urun.deger * 0.8));
+
+    setOyunDurumu((mevcutDurum) => ({
+      ...mevcutDurum,
+      para: mevcutDurum.para + satisDegeri,
+      toplamKazanc: mevcutDurum.toplamKazanc + satisDegeri,
+      istatistik: {
+        ...mevcutDurum.istatistik,
+        satilanUrunSayisi: mevcutDurum.istatistik.satilanUrunSayisi + 1,
+        zararSatisSayisi: mevcutDurum.istatistik.zararSatisSayisi + 1,
+        efsaneSatisSayisi: mevcutDurum.istatistik.efsaneSatisSayisi + (satis.urun.nadirlik === "efsane" ? 1 : 0)
+      },
+      pazarSatislari: mevcutDurum.pazarSatislari.filter((kayit) => kayit.id !== satisId),
+      envanter: satis.urun.depoId ? mevcutDurum.envanter : mevcutDurum.envanter.filter((urun) => urun.id !== satis.urun.id),
+      sahipDepolar: mevcutDurum.sahipDepolar.map((depo) => depo.id === satis.urun.depoId
+        ? { ...depo, urunler: depo.urunler.map((urun) => urun.id === satis.urun.id ? { ...urun, satildi: true } : urun) }
+        : depo)
+    }));
+    zamanIlerle(AKSIYON_SURELERI.hizliSatis);
+    setSonMesaj(`${satis.urun.isim} beklemeden ${paraYaz(satisDegeri)} zararına satıldı.`);
+  }, [oyunDurumu.pazarSatislari, zamanIlerle]);
+
   const pazarMusterisiyleKonus = useCallback((satisId: string) => {
+    const satis = oyunDurumu.pazarSatislari.find((kayit) => kayit.id === satisId);
+    const ilkSohbet = satis?.sohbetler?.find((sohbet) => sohbet.durum === "aktif") ?? satis?.sohbetler?.[0];
+    if (!satis || !ilkSohbet) return;
+
+    setPazarSohbetSatisId(satisId);
+    setAktifPazarSohbetId(ilkSohbet.id);
+    setPazarlikMetni(String(Math.max(1, Math.round(ilkSohbet.teklif * 1.12))));
+    setOyunDurumu((mevcutDurum) => ({
+      ...mevcutDurum,
+      istatistik: {
+        ...mevcutDurum.istatistik,
+        pazarSohbetSayisi: mevcutDurum.istatistik.pazarSohbetSayisi + 1
+      }
+    }));
+    setSahne("pazarSohbet");
+  }, [oyunDurumu.pazarSatislari]);
+
+  const pazarSohbetiniSec = useCallback((satisId: string, sohbet: PazarSohbetKaydi) => {
+    setPazarSohbetSatisId(satisId);
+    setAktifPazarSohbetId(sohbet.id);
+    setPazarlikMetni(String(Math.max(1, Math.round(sohbet.teklif * 1.12))));
+  }, []);
+
+  const pazarSohbetMesajiEkle = useCallback((satisId: string, sohbetId: string, mesaj: PazarSohbetMesaji, ekGuncelleme?: Partial<PazarSohbetKaydi>) => {
+    setOyunDurumu((mevcutDurum) => ({
+      ...mevcutDurum,
+      pazarSatislari: mevcutDurum.pazarSatislari.map((satis) => satis.id === satisId
+        ? {
+          ...satis,
+          sohbetler: (satis.sohbetler ?? []).map((sohbet) => sohbet.id === sohbetId
+            ? { ...sohbet, ...(mesaj.kimden === "oyuncu" ? { beklemeSaniye: haberBeklemeSaniyesi(65, 65, mevcutDurum.pazarHaberi) } : {}), ...ekGuncelleme, mesajlar: [...sohbet.mesajlar, mesaj].slice(-18) }
+            : sohbet)
+        }
+        : satis)
+    }));
+  }, []);
+
+  const pazarSohbetTeklifYukselt = useCallback(() => {
+    if (!aktifPazarSohbeti || !aktifPazarSatisi) return;
+    const yeniTeklif = teklifOku(pazarlikMetni);
+    if (yeniTeklif <= aktifPazarSohbeti.sohbet.teklif) {
+      setSonMesaj("Yeni teklif mevcut tekliften yüksek olmalı.");
+      return;
+    }
+
+    pazarSohbetMesajiEkle(
+      aktifPazarSohbeti.satisId,
+      aktifPazarSohbeti.sohbetId,
+      pazarMesajiOlustur("oyuncu", pazarOyuncuTeklifMesaji(yeniTeklif, aktifPazarSohbeti.sohbet.teklif)),
+      { yaziyorSaniye: 2, beklemeSaniye: haberBeklemeSaniyesi(65, 65, oyunDurumu.pazarHaberi), bekleyenTeklif: yeniTeklif }
+    );
+  }, [aktifPazarSatisi, aktifPazarSohbeti, oyunDurumu.pazarHaberi, pazarlikMetni, pazarSohbetMesajiEkle]);
+
+  const pazarSohbetEngelle = useCallback(() => {
+    if (!aktifPazarSohbeti) return;
+    pazarSohbetMesajiEkle(
+      aktifPazarSohbeti.satisId,
+      aktifPazarSohbeti.sohbetId,
+      pazarMesajiOlustur("sistem", "Bu alıcı engellendi. Sohbet kapandı."),
+      { durum: "engellendi", yaziyorSaniye: 0, beklemeSaniye: 0 }
+    );
+    setSonMesaj("Alıcı engellendi. Diğer tekliflere bakabilirsin.");
+  }, [aktifPazarSohbeti, pazarSohbetMesajiEkle]);
+
+  const pazarSohbetTeklifKabul = useCallback(() => {
+    if (!aktifPazarSohbeti) return;
+    pazarTeklifiniKabulEt(aktifPazarSohbeti.satisId, aktifPazarSohbeti.sohbetId);
+  }, [aktifPazarSohbeti, pazarTeklifiniKabulEt]);
+
+  const eskiPazarMusterisiyleKonus = useCallback((satisId: string) => {
     let musteriVazgecti = false;
 
     setOyunDurumu((mevcutDurum) => ({
@@ -828,6 +1228,11 @@ export default function AnaOyunEkrani() {
       para: mevcutDurum.para + teklif.teklif,
       toplamKazanc: mevcutDurum.toplamKazanc + teklif.teklif,
       itibar: itibarSinirla(mevcutDurum.itibar + itibarOdulu),
+      istatistik: {
+        ...mevcutDurum.istatistik,
+        satilanUrunSayisi: mevcutDurum.istatistik.satilanUrunSayisi + satilanUrunler.length,
+        efsaneSatisSayisi: mevcutDurum.istatistik.efsaneSatisSayisi + satilanUrunler.filter((urun) => urun.nadirlik === "efsane").length
+      },
       envanter: mevcutDurum.envanter.filter((envanterUrunu) => !satilanUrunler.some((urun) => !urun.depoId && urun.id === envanterUrunu.id)),
       sahipDepolar: mevcutDurum.sahipDepolar.map((depo) => ({
         ...depo,
@@ -1001,12 +1406,51 @@ export default function AnaOyunEkrani() {
     setSonMesaj("Yeni oyun başladı. Depo pazarı hazır.");
   }, []);
 
+  const ustGosterge = (_baslik: string, geriSahne?: Sahne, envanterKilitli = false) => {
+    const oyuncuAdi = `${oyunDurumu.profil.ad.trim() || "Depo"} ${oyunDurumu.profil.soyad.trim() || "Avcısı"}`;
+    const urunSayisi = envanterUrunleri.filter((urun) => !urun.satildi).length;
+
+    return (
+    <ImageBackground source={ekranGorselleri.header} imageStyle={stiller.ustHudResim} style={stiller.ustHud}>
+      <View style={stiller.ustHudBaslikSatiri}>
+        {geriSahne ? (
+          <Pressable style={stiller.hudGeriButonu} onPress={() => setSahne(geriSahne)}><Text style={stiller.hudGeriYazi}>Geri</Text></Pressable>
+        ) : (
+          <Pressable style={stiller.hudProfilButonu} onPress={() => setSahne("profil")}><Text style={stiller.profilHarf}>{profilHarfleri}</Text></Pressable>
+        )}
+        <View style={stiller.hudBaslikOrta}>
+          <Text style={stiller.hudBaslik} numberOfLines={1} adjustsFontSizeToFit>{oyuncuAdi}</Text>
+          <Text style={stiller.hudTarih}>{tarihYaz(oyunDurumu.gun)}</Text>
+        </View>
+        <View style={stiller.hudRutbeAlani}>
+          <Text style={stiller.hudRutbeEtiket}>Rütbe</Text>
+          <Text style={stiller.hudRutbeYazi} numberOfLines={1} adjustsFontSizeToFit>{itibarMetni}</Text>
+        </View>
+      </View>
+      <View style={stiller.hudBilgiSatiri}>
+        <View style={stiller.hudBilgiPili}><Text style={stiller.hudBilgiEtiket}>Cüzdan</Text><Text style={stiller.hudBilgiDeger}>{paraYaz(oyunDurumu.para)}</Text></View>
+        <View style={stiller.hudBilgiPili}><Text style={stiller.hudBilgiEtiket}>Saat</Text><Text style={stiller.hudBilgiDeger}>{saatYaz(oyunDurumu.saatDakika)}</Text></View>
+        <Pressable disabled={envanterKilitli} style={[stiller.hudBilgiPili, stiller.hudEnvanterPili, envanterKilitli && stiller.hudKilitli]} onPress={() => setSahne("envanter")}>
+          <Text style={stiller.hudBilgiEtiket}>Envanterim</Text>
+          <View style={stiller.hudEnvanterSayacSatiri}>
+            <Text style={stiller.hudEnvanterSayac}>{sahipDepoSayisi} Depo</Text>
+            <Text style={stiller.hudEnvanterAyirici}>|</Text>
+            <Text style={stiller.hudEnvanterSayac}>{urunSayisi} Ürün</Text>
+          </View>
+          {bildirimSayisi > 0 ? <Text style={stiller.hudTeklifUyari}>{bildirimSayisi} teklif</Text> : null}
+        </Pressable>
+      </View>
+    </ImageBackground>
+    );
+  };
+
   if (oyunDurumu.gunSonu || sahne === "gunSonu") {
     return (
       <SafeAreaView style={stiller.ekranAcik}>
         <StatusBar style="dark" />
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={stiller.sayfaIci}>
-          <View style={stiller.gunSonuPaneli}>
+          {ustGosterge("Gün Sonu", "ana", true)}
+          <ImageBackground source={ekranGorselleri.gunSonu} imageStyle={stiller.gorselPanelResim} style={[stiller.gunSonuPaneli, stiller.gorselPanel]}>
             <Text style={stiller.kucukEtiket}>GÜN SONU</Text>
             <Text style={stiller.buyukBaslik}>{tarihYaz(oyunDurumu.gun)} Bitti</Text>
             <Text style={stiller.heroAlt}>Saat 00.00 oldu. Bugünün kasasını kontrol edip sonraki güne geç.</Text>
@@ -1017,7 +1461,7 @@ export default function AnaOyunEkrani() {
               <View style={stiller.profilBilgiKarti}><Text style={stiller.profilBilgiEtiket}>Pazar Teklifi</Text><Text style={stiller.profilBilgiDeger}>{bildirimSayisi}</Text></View>
             </View>
             <Pressable style={stiller.genisButon} onPress={sonrakiGuneGec}><Text style={stiller.genisButonYazi}>Sonraki Güne Geç</Text></Pressable>
-          </View>
+          </ImageBackground>
         </ScrollView>
       </SafeAreaView>
     );
@@ -1030,13 +1474,9 @@ export default function AnaOyunEkrani() {
       <SafeAreaView style={stiller.ekranAcik}>
         <StatusBar style="dark" />
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={stiller.sayfaIci}>
-          <View style={stiller.ustBar}>
-            <Pressable style={stiller.geriButonu} onPress={() => setSahne("ana")}><Text style={stiller.geriYazi}>Geri</Text></Pressable>
-            <Text style={stiller.merkezLogo}>Depo Pazarı</Text>
-            <Text style={stiller.cuzdan}>👛 {paraYaz(oyunDurumu.para)}</Text>
-          </View>
+          {ustGosterge("Depo Pazarı", "ana", true)}
 
-          <View style={stiller.acikArtirmaHero}>
+          <ImageBackground source={ekranGorselleri.canliAcikArtirma} imageStyle={stiller.gorselPanelResim} style={[stiller.acikArtirmaHero, stiller.gorselPanel]}>
             <Text style={stiller.kucukEtiket}>CANLI AÇIK ARTIRMA</Text>
             <Text style={stiller.buyukBaslik}>{acikArtirma.depoIsmi}</Text>
             <Text style={stiller.heroAlt}>Zorluk: {acikArtirma.zorluk} • Lider: {liderAdi(acikArtirma.lider, acikArtirma.katilimcilar)} • Süre: {sureYaz(acikArtirma.kalanSaniye)}</Text>
@@ -1047,7 +1487,7 @@ export default function AnaOyunEkrani() {
                 <View style={[stiller.sayacDolgu, { width: `${Math.max(4, (acikArtirma.kalanSaniye / acikArtirma.sureSaniye) * 100)}%` }]} />
               </View>
             </View>
-          </View>
+          </ImageBackground>
 
           <View style={stiller.adminKarti}>
             <View style={stiller.adminRozet}><Text style={stiller.adminHarf}>A</Text></View>
@@ -1126,17 +1566,13 @@ export default function AnaOyunEkrani() {
       <SafeAreaView style={stiller.ekranAcik}>
         <StatusBar style="dark" />
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={stiller.sayfaIci}>
-          <View style={stiller.ustBar}>
-            <Pressable style={stiller.geriButonu} onPress={() => setSahne("ana")}><Text style={stiller.geriYazi}>Geri</Text></Pressable>
-            <Text style={stiller.merkezLogo}>Depo Pazarı</Text>
-            <Text style={stiller.cuzdan}>{tarihYaz(oyunDurumu.gun)}</Text>
-          </View>
+          {ustGosterge("Depo Pazarı", "ana")}
 
-          <View style={stiller.pazarHeroYeni}>
+          <ImageBackground source={ekranGorselleri.depoPazari} imageStyle={stiller.gorselPanelResim} style={[stiller.pazarHeroYeni, stiller.gorselPanel]}>
             <Text style={stiller.kucukEtiket}>BUGÜNKÜ LİSTE</Text>
             <Text style={stiller.buyukBaslik}>Depo Seç</Text>
             <Text style={stiller.heroAlt}>Kartlarda sadece katılımcı sayısı ve açılış teklifi var. Depoya dokununca iç düzenini görüp ihaleye girebilirsin.</Text>
-          </View>
+          </ImageBackground>
 
           <View style={stiller.pazarListe}>
             {pazarDepolari.map((depo) => {
@@ -1191,17 +1627,13 @@ export default function AnaOyunEkrani() {
       <SafeAreaView style={stiller.ekranAcik}>
         <StatusBar style="dark" />
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={stiller.sayfaIci}>
-          <View style={stiller.ustBar}>
-            <Pressable style={stiller.geriButonu} onPress={() => setSahne("ana")}><Text style={stiller.geriYazi}>Geri</Text></Pressable>
-            <Text style={stiller.merkezLogo}>Ürün Pazarı</Text>
-            <Text style={stiller.cuzdan}>👛 {paraYaz(oyunDurumu.para)}</Text>
-          </View>
+          {ustGosterge("Ürün Pazarı", "ana")}
 
-          <View style={stiller.urunPazariHero}>
+          <ImageBackground source={ekranGorselleri.urunPazari} imageStyle={stiller.gorselPanelResim} style={[stiller.urunPazariHero, stiller.gorselPanel]}>
             <Text style={stiller.kucukEtiket}>GİZLİ FİYAT</Text>
             <Text style={stiller.buyukBaslik}>Ürünü Gör, Teklif Ver</Text>
             <Text style={stiller.heroAlt}>Burada ürünü görürsün ama satıcının kabul fiyatını görmezsin. Doğru teklif verirsen ürün envantere geçer.</Text>
-          </View>
+          </ImageBackground>
 
           <View style={stiller.urunPazariListe}>
             {pazarUrunleri.map((pazarUrunu) => {
@@ -1244,13 +1676,9 @@ export default function AnaOyunEkrani() {
       <SafeAreaView style={stiller.ekranAcik}>
         <StatusBar style="dark" />
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={stiller.sayfaIci}>
-          <View style={stiller.ustBar}>
-            <Pressable style={stiller.geriButonu} onPress={() => setSahne("envanter")}><Text style={stiller.geriYazi}>Geri</Text></Pressable>
-            <Text style={stiller.merkezLogo}>Depo Kur</Text>
-            <Text style={stiller.cuzdan}>{saatYaz(oyunDurumu.saatDakika)}</Text>
-          </View>
+          {ustGosterge("Depo Kur", "envanter")}
 
-          <View style={stiller.depoKurPaneli}>
+          <ImageBackground source={ekranGorselleri.depoAcma} imageStyle={stiller.gorselPanelResim} style={[stiller.depoKurPaneli, stiller.gorselPanel]}>
             <Text style={stiller.kucukEtiket}>BENİM DEPOM</Text>
             <Text style={stiller.buyukBaslik}>Depoya İsim Ver</Text>
             <Text style={stiller.heroAlt}>{depoKurUrunu.isim} ilk ürün olarak bu depoya taşınacak.</Text>
@@ -1262,7 +1690,7 @@ export default function AnaOyunEkrani() {
               style={stiller.profilInput}
             />
             <Pressable style={stiller.genisButon} onPress={oyuncuDeposuOlustur}><Text style={stiller.genisButonYazi}>Depoyu Oluştur</Text></Pressable>
-          </View>
+          </ImageBackground>
         </ScrollView>
       </SafeAreaView>
     );
@@ -1273,17 +1701,13 @@ export default function AnaOyunEkrani() {
       <SafeAreaView style={stiller.ekranAcik}>
         <StatusBar style="dark" />
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={stiller.sayfaIci}>
-          <View style={stiller.ustBar}>
-            <Pressable style={stiller.geriButonu} onPress={() => depoyaGir(urunEklenecekDepo.id)}><Text style={stiller.geriYazi}>Geri</Text></Pressable>
-            <Text style={stiller.merkezLogo}>Ürün Ekle</Text>
-            <Text style={stiller.cuzdan}>{saatYaz(oyunDurumu.saatDakika)}</Text>
-          </View>
+          {ustGosterge("Ürün Ekle", "depo")}
 
-          <View style={stiller.envanterHero}>
+          <ImageBackground source={ekranGorselleri.envanter} imageStyle={stiller.gorselPanelResim} style={[stiller.envanterHero, stiller.gorselPanel]}>
             <Text style={stiller.kucukEtiket}>DEPONUN RAFINA</Text>
             <Text style={stiller.buyukBaslik}>{urunEklenecekDepo.isim}</Text>
             <Text style={stiller.heroAlt}>Eklemek istediğin ürün kartına dokun. Kart yukarı kayıp depoya taşınır.</Text>
-          </View>
+          </ImageBackground>
 
           <View style={stiller.envanterListe}>
             {depoyaEklenebilirUrunler.length === 0 ? (
@@ -1307,13 +1731,9 @@ export default function AnaOyunEkrani() {
       <SafeAreaView style={stiller.ekranAcik}>
         <StatusBar style="dark" />
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={stiller.sayfaIci}>
-          <View style={stiller.ustBar}>
-            <Pressable style={stiller.geriButonu} onPress={() => setSahne("ana")}><Text style={stiller.geriYazi}>Geri</Text></Pressable>
-            <Text style={stiller.merkezLogo}>{aktifDepo.isim}</Text>
-            <Text style={stiller.cuzdan}>👛 {paraYaz(oyunDurumu.para)}</Text>
-          </View>
+          {ustGosterge(aktifDepo.isim, "ana")}
 
-          <View style={[stiller.depoDetayHero, aktifDepo.oyuncuDeposu && depoKaliteSeviyesi(aktifDepo) >= 2 && stiller.depoDetayHeroDuzenli, aktifDepo.oyuncuDeposu && depoKaliteSeviyesi(aktifDepo) >= 3 && stiller.depoDetayHeroPremium]}>
+          <ImageBackground source={ekranGorselleri.depoAcma} imageStyle={stiller.gorselPanelResim} style={[stiller.depoDetayHero, stiller.gorselPanel, aktifDepo.oyuncuDeposu && depoKaliteSeviyesi(aktifDepo) >= 2 && stiller.depoDetayHeroDuzenli, aktifDepo.oyuncuDeposu && depoKaliteSeviyesi(aktifDepo) >= 3 && stiller.depoDetayHeroPremium]}>
             <Text style={stiller.kucukEtiket}>SAHİP OLDUĞUM DEPO</Text>
             <Text style={stiller.buyukBaslik}>{aktifDepo.isim}</Text>
             <Text style={stiller.heroAlt}>Satın alma: {paraYaz(aktifDepo.satinAlmaFiyati)} • Kalan değer: {paraYaz(kalanDeger)} • Kalite: {kalite.etiket}</Text>
@@ -1348,7 +1768,7 @@ export default function AnaOyunEkrani() {
             ) : (
               <Pressable style={stiller.silButonu} onPress={() => depoSil(aktifDepo.id)}><Text style={stiller.silButonuYazi}>Depoyu Listeden Sil</Text></Pressable>
             )}
-          </View>
+          </ImageBackground>
 
           <View style={stiller.kutuGrid}>
             {aktifDepo.urunler.map((urun) => (
@@ -1374,17 +1794,13 @@ export default function AnaOyunEkrani() {
       <SafeAreaView style={stiller.ekranAcik}>
         <StatusBar style="dark" />
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={stiller.sayfaIci}>
-          <View style={stiller.ustBar}>
-            <Pressable style={stiller.geriButonu} onPress={() => setSahne("envanter")}><Text style={stiller.geriYazi}>Geri</Text></Pressable>
-            <Text style={stiller.merkezLogo}>Depo Satışı</Text>
-            <Text style={stiller.cuzdan}>{saatYaz(oyunDurumu.saatDakika)}</Text>
-          </View>
+          {ustGosterge("Depo Satışı", "envanter", true)}
 
-          <View style={stiller.acikArtirmaHero}>
+          <ImageBackground source={ekranGorselleri.depoSatis} imageStyle={stiller.gorselPanelResim} style={[stiller.acikArtirmaHero, stiller.gorselPanel]}>
             <Text style={stiller.kucukEtiket}>SATICI SENSİN</Text>
             <Text style={stiller.buyukBaslik}>Mini Depo Paketi</Text>
             <Text style={stiller.heroAlt}>{depoSatis.urunler.length} ürün • Ham değer: {paraYaz(toplamDeger)} • Öneri: {paraYaz(depoSatis.oneriFiyat)}</Text>
-          </View>
+          </ImageBackground>
 
           <View style={stiller.teklifPaneli}>
             <Text style={stiller.salonMesaji}>{depoSatis.mesaj}</Text>
@@ -1444,17 +1860,13 @@ export default function AnaOyunEkrani() {
       <SafeAreaView style={stiller.ekranAcik}>
         <StatusBar style="dark" />
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={stiller.sayfaIci}>
-          <View style={stiller.ustBar}>
-            <Pressable style={stiller.geriButonu} onPress={() => setSahne("ana")}><Text style={stiller.geriYazi}>Geri</Text></Pressable>
-            <Text style={stiller.merkezLogo}>Envanterim</Text>
-            <Text style={stiller.cuzdan}>👛 {paraYaz(oyunDurumu.para)}</Text>
-          </View>
+          {ustGosterge("Envanterim", "ana", true)}
 
-          <View style={stiller.envanterHero}>
+          <ImageBackground source={ekranGorselleri.envanter} imageStyle={stiller.gorselPanelResim} style={[stiller.envanterHero, stiller.gorselPanel]}>
             <Text style={stiller.kucukEtiket}>KASA VE DEPOLAR</Text>
             <Text style={stiller.buyukBaslik}>Envanter</Text>
             <Text style={stiller.heroAlt}>Depolar ayrı, açılmış depolardan çıkan ürünler ve Ürün Pazarı alımları ayrı listelenir.</Text>
-          </View>
+          </ImageBackground>
 
           <View style={stiller.sekmeSatiri}>
             <Pressable style={[stiller.sekmeButonu, envanterSekmesi === "depolar" && stiller.sekmeAktif]} onPress={() => setEnvanterSekmesi("depolar")}>
@@ -1495,6 +1907,8 @@ export default function AnaOyunEkrani() {
               ) : envanterUrunleri.map((urun) => {
                 const ayar = nadirlikAyarlari[urun.nadirlik];
                 const pazarSatisi = oyunDurumu.pazarSatislari.find((satis) => satis.urun.id === urun.id);
+                const yeniMusteriKalanGunu = pazarSatisi ? Math.max(0, pazarSatisi.sonrakiMusteriGunu - oyunDurumu.gun) : 0;
+                const yeniMusteriMetni = yeniMusteriKalanGunu <= 0 ? "Yeni müşteri bekleniyor." : `${yeniMusteriKalanGunu} gün sonra yeni müşteri gelecek.`;
                 const satilabilirMi = !urun.satildi && !pazarSatisi;
 
                 return (
@@ -1512,13 +1926,18 @@ export default function AnaOyunEkrani() {
                       ) : null}
                       {pazarSatisi ? (
                         <View style={stiller.pazarTeklifPaneli}>
-                          <Text style={stiller.depoKartDurum}>{pazarSatisi.durum === "teklif" ? `Teklif geldi: ${paraYaz(pazarSatisi.teklif ?? 0)}` : `Müşteri vazgeçti. Yeni müşteri ${tarihYaz(pazarSatisi.sonrakiMusteriGunu)}.`}</Text>
+                          <Text style={stiller.depoKartDurum}>{pazarSatisi.durum === "teklif" ? `${pazarSatisi.sohbetler?.filter((sohbet) => sohbet.durum === "aktif").length ?? 0} sohbet • En iyi teklif: ${paraYaz(pazarSatisi.teklif ?? 0)}` : `Müşteriler vazgeçti. ${yeniMusteriMetni}`}</Text>
                           {pazarSatisi.durum === "teklif" ? (
                             <View style={stiller.urunAksiyonSatiri}>
-                              <Pressable style={stiller.kucukAksiyonButonu} onPress={() => pazarTeklifiniKabulEt(pazarSatisi.id)}><Text style={stiller.kucukAksiyonYazi}>Kabul Et</Text></Pressable>
-                              <Pressable style={stiller.kucukIkincilButon} onPress={() => pazarMusterisiyleKonus(pazarSatisi.id)}><Text style={stiller.kucukIkincilYazi}>Konuş</Text></Pressable>
+                              <Pressable style={stiller.kucukAksiyonButonu} onPress={() => pazarMusterisiyleKonus(pazarSatisi.id)}><Text style={stiller.kucukAksiyonYazi}>Konuş</Text></Pressable>
+                              <Pressable style={stiller.kucukIkincilButon} onPress={() => pazarSatisiniIptalEt(pazarSatisi.id)}><Text style={stiller.kucukIkincilYazi}>İptal Et</Text></Pressable>
                             </View>
-                          ) : null}
+                          ) : (
+                            <View style={stiller.urunAksiyonSatiri}>
+                              <Pressable style={stiller.kucukAksiyonButonu} onPress={() => pazarZararinaSat(pazarSatisi.id)}><Text style={stiller.kucukAksiyonYazi}>Zararına Sat</Text></Pressable>
+                              <Pressable style={stiller.kucukIkincilButon} onPress={() => pazarSatisiniIptalEt(pazarSatisi.id)}><Text style={stiller.kucukIkincilYazi}>İptal Et</Text></Pressable>
+                            </View>
+                          )}
                         </View>
                       ) : null}
                       {satilabilirMi ? (
@@ -1539,38 +1958,156 @@ export default function AnaOyunEkrani() {
     );
   }
 
+  if (sahne === "pazarSohbet") {
+    const satis = aktifPazarSatisi;
+    const sohbet = aktifPazarSohbeti?.sohbet ?? null;
+    const sohbetler = satis?.sohbetler ?? [];
+
+    return (
+      <SafeAreaView style={stiller.ekranAcik}>
+        <StatusBar style="dark" />
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={stiller.sayfaIci}>
+          {ustGosterge("Ürün Sohbetleri", "envanter")}
+
+          {!satis || !sohbet ? (
+            <View style={stiller.bosDepoAlani}><Text style={stiller.bosBaslik}>Sohbet yok</Text><Text style={stiller.bosYazi}>Bu ürün için aktif alıcı bulunamadı.</Text></View>
+          ) : (
+            <ImageBackground source={ekranGorselleri.urunPazari} imageStyle={stiller.gorselPanelResim} style={[stiller.sohbetSayfasi, stiller.gorselPanel]}>
+              <View style={stiller.sohbetUrunBasligi}>
+                <View style={stiller.sohbetUrunIkon}><Text style={stiller.envanterUrunIkon}>{urunIkonuSec(satis.urun.isim)}</Text></View>
+                <View style={stiller.esnekAlan}>
+                  <Text style={stiller.sohbetUrunAdi}>{satis.urun.isim}</Text>
+                  <Text style={stiller.sohbetUrunAlt}>{satis.kaynak} • En iyi teklif {paraYaz(satis.teklif ?? 0)}</Text>
+                </View>
+              </View>
+
+              <View style={stiller.sohbetKisiSeridi}>
+                {sohbetler.map((kayit) => (
+                  <Pressable key={kayit.id} style={[stiller.sohbetKisiPili, aktifPazarSohbeti?.sohbetId === kayit.id && stiller.sohbetKisiPiliAktif, kayit.durum !== "aktif" && stiller.pasifKatilimci]} onPress={() => pazarSohbetiniSec(satis.id, kayit)}>
+                    <View style={[stiller.sohbetAvatar, { backgroundColor: kayit.renk }]}><Text style={stiller.insanHarf}>{kayit.musteri[0]}</Text></View>
+                    <View>
+                      <Text style={stiller.sohbetKisiAdi}>{kayit.musteri}</Text>
+                      <Text style={stiller.sohbetKisiDurum}>{kayit.durum === "aktif" ? `${kayit.beklemeSaniye} sn` : kayit.durum}</Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </View>
+
+              <View style={stiller.sohbetTelefonPaneli}>
+                <View style={stiller.sohbetBaslikSatiri}>
+                  <View style={[stiller.sohbetAvatar, { backgroundColor: sohbet.renk }]}><Text style={stiller.insanHarf}>{sohbet.musteri[0]}</Text></View>
+                  <View style={stiller.esnekAlan}>
+                    <Text style={stiller.sohbetBaslik}>{sohbet.musteri}</Text>
+                    <Text style={stiller.sohbetAltBaslik}>{sohbet.durum === "aktif" ? sohbet.yaziyorSaniye > 0 ? "yazıyor..." : `teklif ${paraYaz(sohbet.teklif)}` : "sohbet kapandı"}</Text>
+                  </View>
+                </View>
+
+                <View style={stiller.mesajAlani}>
+                  {sohbet.mesajlar.map((mesaj) => (
+                    <View key={mesaj.id} style={[stiller.mesajBalonu, mesaj.kimden === "oyuncu" && stiller.mesajBalonuBen, mesaj.kimden === "sistem" && stiller.mesajBalonuSistem]}>
+                      <Text style={stiller.mesajMetni}>{mesaj.metin}</Text>
+                    </View>
+                  ))}
+                  {sohbet.yaziyorSaniye > 0 ? <Text style={stiller.yaziyorYazi}>{sohbet.musteri} yazıyor...</Text> : null}
+                </View>
+
+                <View style={stiller.sohbetTeklifSatiri}>
+                  <TextInput value={pazarlikMetni} onChangeText={setPazarlikMetni} keyboardType="number-pad" placeholder="Yeni teklif" placeholderTextColor="#7a8a80" style={stiller.sohbetInput} />
+                  <Pressable disabled={sohbet.durum !== "aktif"} style={[stiller.sohbetGonderButonu, sohbet.durum !== "aktif" && stiller.pasifButon]} onPress={pazarSohbetTeklifYukselt}><Text style={stiller.sohbetGonderYazi}>Gönder</Text></Pressable>
+                </View>
+
+                <View style={stiller.sohbetAksiyonSatiri}>
+                  <Pressable disabled={sohbet.durum !== "aktif"} style={[stiller.sohbetAksiyonButonu, sohbet.durum !== "aktif" && stiller.pasifButon]} onPress={pazarSohbetTeklifYukselt}><Text style={stiller.sohbetAksiyonYazi}>Teklifi Yükselt</Text></Pressable>
+                  <Pressable disabled={sohbet.durum !== "aktif"} style={[stiller.sohbetKabulButonu, sohbet.durum !== "aktif" && stiller.pasifButon]} onPress={pazarSohbetTeklifKabul}><Text style={stiller.sohbetKabulYazi}>Kabul Et</Text></Pressable>
+                  <Pressable disabled={sohbet.durum !== "aktif"} style={[stiller.sohbetEngelButonu, sohbet.durum !== "aktif" && stiller.pasifButon]} onPress={pazarSohbetEngelle}><Text style={stiller.sohbetEngelYazi}>Engelle</Text></Pressable>
+                </View>
+              </View>
+            </ImageBackground>
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  if (sahne === "basarimlar") {
+    return (
+      <SafeAreaView style={stiller.ekranAcik}>
+        <StatusBar style="dark" />
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={stiller.sayfaIci}>
+          {ustGosterge("Başarımlar", "profil")}
+
+          <View style={stiller.basarimHeroPaneli}>
+            <View style={stiller.basarimHeroUstSatir}>
+              <View>
+                <Text style={stiller.kucukEtiket}>KARİYER EXP</Text>
+                <Text style={stiller.buyukBaslik}>Başarımlar</Text>
+              </View>
+              <View style={stiller.seviyeRozeti}><Text style={stiller.seviyeRozetiYazi}>Lv {expDurumu.seviye}</Text></View>
+            </View>
+            <Text style={stiller.basarimOzetYazi}>{acilanBasarimSayisi}/{basarimTanimlari.length} başarım açıldı. Başarımlar EXP verir; seviye atlayınca +{SEVIYE_ITIBAR_ODULU} itibar kazanırsın.</Text>
+            <View style={stiller.expHatti}>
+              <Animated.View style={[stiller.expDolgu, { width: expDolguGenisligi }]} />
+            </View>
+            <Text style={stiller.expAltYazi}>{expDurumu.mevcut}/{expDurumu.hedef} EXP • Sonraki seviye için {expDurumu.hedef - expDurumu.mevcut} EXP</Text>
+          </View>
+
+          <View style={stiller.basarimListe}>
+            {basarimKartlari.map((basarim) => {
+              const durumMetni = basarim.acildi ? "Açıldı" : basarim.gizli ? "Gizli" : basarim.kilitli ? "Kilitli" : "Devam";
+              return (
+                <View key={basarim.id} style={[stiller.basarimKarti, basarim.acildi && stiller.basarimKartiAcik, !basarim.acildi && basarim.kilitli && stiller.basarimKartiKilitli]}>
+                  <View style={stiller.basarimKartiUstSatir}>
+                    <View style={[stiller.basarimIcon, basarim.acildi && stiller.basarimIconAcik]}><Text style={stiller.basarimIconYazi}>{basarim.acildi ? "✓" : basarim.gizli ? "?" : "•"}</Text></View>
+                    <View style={stiller.esnekAlan}>
+                      <Text style={stiller.basarimBaslik}>{basarim.baslik}</Text>
+                      <Text style={stiller.basarimAciklama}>{basarim.aciklama}</Text>
+                    </View>
+                    <Text style={[stiller.basarimDurum, basarim.acildi && stiller.basarimDurumAcik]}>{durumMetni}</Text>
+                  </View>
+                  <View style={stiller.basarimIlerlemeHatti}>
+                    <View style={[stiller.basarimIlerlemeDolgu, { width: `${Math.round(basarim.oran * 100)}%` }]} />
+                  </View>
+                  <View style={stiller.basarimAltSatir}>
+                    <Text style={stiller.basarimIlerlemeYazi}>{basarimIlerlemeMetni(basarim, basarim.mevcutIlerleme)}</Text>
+                    <Text style={stiller.basarimOdulYazi}>+{basarim.exp} EXP</Text>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
   if (sahne === "profil") {
     return (
       <SafeAreaView style={stiller.ekranAcik}>
         <StatusBar style="dark" />
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={stiller.sayfaIci}>
-          <View style={stiller.ustBar}>
-            <Pressable style={stiller.geriButonu} onPress={() => setSahne("ana")}><Text style={stiller.geriYazi}>Geri</Text></Pressable>
-            <Text style={stiller.merkezLogo}>Profil</Text>
-            <Text style={stiller.cuzdan}>👛 {paraYaz(oyunDurumu.para)}</Text>
-          </View>
+          {ustGosterge("Profil", "ana")}
 
-          <View style={stiller.profilHero}>
-            <View style={stiller.profilBuyukRozet}><Text style={stiller.profilBuyukHarf}>{profilHarfleri}</Text></View>
-            <Text style={stiller.anaLogo}>{oyunDurumu.profil.ad.trim() || "Depo"} {oyunDurumu.profil.soyad.trim() || "Avcısı"}</Text>
-            <Text style={stiller.anaAltYazi}>Açık artırma salonunda depoları kovalayan girişimci profilin.</Text>
-            <View style={stiller.isimFormu}>
-              <TextInput
-                value={oyunDurumu.profil.ad}
-                onChangeText={(deger) => profilGuncelle("ad", deger)}
-                placeholder="İsim"
-                placeholderTextColor="#8a7f78"
-                style={stiller.profilInput}
-              />
-              <TextInput
-                value={oyunDurumu.profil.soyad}
-                onChangeText={(deger) => profilGuncelle("soyad", deger)}
-                placeholder="Soy isim"
-                placeholderTextColor="#8a7f78"
-                style={stiller.profilInput}
-              />
+          <ImageBackground source={ekranGorselleri.profil} imageStyle={stiller.gorselPanelResim} style={[stiller.profilSahne, stiller.gorselPanel]}>
+            <View style={stiller.profilKimlikPaneli}>
+              <View style={stiller.profilRozetBuyuk}><Text style={stiller.profilBuyukHarf}>{profilHarfleri}</Text></View>
+              <View style={stiller.esnekAlan}>
+                <Text style={stiller.profilUnvan}>{itibarMetni}</Text>
+                <Text style={stiller.profilIsim}>{oyunDurumu.profil.ad.trim() || "Depo"} {oyunDurumu.profil.soyad.trim() || "Avcısı"}</Text>
+                <Text style={stiller.profilOzet}>Salon itibarı, banka disiplini ve satış kararların bu ekranda tek bakışta okunur.</Text>
+              </View>
             </View>
-          </View>
+            <View style={stiller.itibarHatti}>
+              <View style={[stiller.itibarDolgu, { width: `${oyunDurumu.itibar}%` }]} />
+            </View>
+            <View style={stiller.profilSeviyeBilgiPaneli}>
+              <Text style={stiller.profilSeviyeBilgiBaslik}>Sonraki itibar ödülü</Text>
+              <Text style={stiller.profilSeviyeBilgiYazi}>{sonrakiItibarExp} EXP kaldı • Seviye atlayınca +{SEVIYE_ITIBAR_ODULU} itibar</Text>
+            </View>
+            <View style={stiller.profilFormSatiri}>
+              <TextInput value={oyunDurumu.profil.ad} onChangeText={(deger) => profilGuncelle("ad", deger)} placeholder="İsim" placeholderTextColor="#8a7f78" style={stiller.profilInputYeni} />
+              <TextInput value={oyunDurumu.profil.soyad} onChangeText={(deger) => profilGuncelle("soyad", deger)} placeholder="Soy isim" placeholderTextColor="#8a7f78" style={stiller.profilInputYeni} />
+            </View>
+          </ImageBackground>
 
           <View style={[stiller.bankaKarti, krediGeciktiMi && stiller.bankaGecikmis]}>
             <Pressable style={stiller.bankaBaslikSatiri} onPress={() => setBankaAcik((acikMi) => !acikMi)}>
@@ -1619,16 +2156,31 @@ export default function AnaOyunEkrani() {
             ) : null}
           </View>
 
-          <View style={stiller.profilGrid}>
-            <View style={stiller.profilBilgiKarti}><Text style={stiller.profilBilgiEtiket}>Cüzdan</Text><Text style={stiller.profilBilgiDeger}>{paraYaz(oyunDurumu.para)}</Text></View>
-            <View style={stiller.profilBilgiKarti}><Text style={stiller.profilBilgiEtiket}>Toplam Kazanç</Text><Text style={stiller.profilBilgiDeger}>{paraYaz(oyunDurumu.toplamKazanc)}</Text></View>
-            <View style={stiller.profilBilgiKarti}><Text style={stiller.profilBilgiEtiket}>Toplam Harcama</Text><Text style={stiller.profilBilgiDeger}>{paraYaz(oyunDurumu.toplamHarcama)}</Text></View>
-            <View style={stiller.profilBilgiKarti}><Text style={stiller.profilBilgiEtiket}>Kâr / Zarar</Text><Text style={[stiller.profilBilgiDeger, { color: karZarar >= 0 ? "#178f5f" : "#d94b4b" }]}>{paraYaz(karZarar)}</Text></View>
-            <View style={stiller.profilBilgiKarti}><Text style={stiller.profilBilgiEtiket}>Açılan Depo</Text><Text style={stiller.profilBilgiDeger}>{oyunDurumu.acilanDepo}</Text></View>
-            <View style={stiller.profilBilgiKarti}><Text style={stiller.profilBilgiEtiket}>Sahip Depo</Text><Text style={stiller.profilBilgiDeger}>{sahipDepoSayisi}</Text></View>
-            <View style={stiller.profilBilgiKarti}><Text style={stiller.profilBilgiEtiket}>İtibar</Text><Text style={stiller.profilBilgiDeger}>{oyunDurumu.itibar}/100</Text></View>
-            <View style={stiller.profilBilgiKarti}><Text style={stiller.profilBilgiEtiket}>Seviye</Text><Text style={stiller.profilBilgiDeger}>{itibarMetni}</Text></View>
+          <View style={stiller.profilPerformansPaneli}>
+            <Text style={stiller.panelBaslikYeni}>Performans Panosu</Text>
+            <View style={stiller.profilMetrikSatiri}><Text style={stiller.profilMetrikEtiket}>Toplam kazanç</Text><Text style={stiller.profilMetrikDeger}>{paraYaz(oyunDurumu.toplamKazanc)}</Text></View>
+            <View style={stiller.profilMetrikSatiri}><Text style={stiller.profilMetrikEtiket}>Toplam harcama</Text><Text style={stiller.profilMetrikDeger}>{paraYaz(oyunDurumu.toplamHarcama)}</Text></View>
+            <View style={stiller.profilMetrikSatiri}><Text style={stiller.profilMetrikEtiket}>Kâr / zarar</Text><Text style={[stiller.profilMetrikDeger, { color: karZarar >= 0 ? "#178f5f" : "#d94b4b" }]}>{paraYaz(karZarar)}</Text></View>
+            <View style={stiller.profilMiniOzetSatiri}>
+              <View style={stiller.profilMiniOzet}><Text style={stiller.profilBilgiEtiket}>Açılan</Text><Text style={stiller.profilBilgiDeger}>{oyunDurumu.acilanDepo}</Text></View>
+              <View style={stiller.profilMiniOzet}><Text style={stiller.profilBilgiEtiket}>Sahip</Text><Text style={stiller.profilBilgiDeger}>{sahipDepoSayisi}</Text></View>
+              <View style={stiller.profilMiniOzet}><Text style={stiller.profilBilgiEtiket}>İtibar</Text><Text style={stiller.profilBilgiDeger}>{oyunDurumu.itibar}</Text></View>
+            </View>
           </View>
+
+          <Pressable style={stiller.profilBasarimKarti} onPress={() => setSahne("basarimlar")}>
+            <View style={stiller.basarimKartiUstSatir}>
+              <View>
+                <Text style={stiller.kucukEtiket}>BAŞARIMLAR</Text>
+                <Text style={stiller.profilBasarimBaslik}>Kariyer Seviyesi {expDurumu.seviye}</Text>
+              </View>
+              <Text style={stiller.gunRozeti}>{acilanBasarimSayisi}/{basarimTanimlari.length}</Text>
+            </View>
+            <View style={stiller.expHattiProfil}>
+              <Animated.View style={[stiller.expDolgu, { width: expDolguGenisligi }]} />
+            </View>
+            <Text style={stiller.profilBasarimYazi}>EXP {expDurumu.mevcut}/{expDurumu.hedef} • Seviye atlayınca itibar kazanırsın.</Text>
+          </Pressable>
         </ScrollView>
       </SafeAreaView>
     );
@@ -1638,52 +2190,44 @@ export default function AnaOyunEkrani() {
     <SafeAreaView style={stiller.ekranAcik}>
       <StatusBar style="dark" />
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={stiller.sayfaIci}>
-        <View style={stiller.profilSatiri}>
-          <Pressable style={stiller.profilButonu} onPress={() => setSahne("profil")}><Text style={stiller.profilHarf}>{profilHarfleri}</Text></Pressable>
-          <View style={stiller.ustBilgiSag}>
-            <View style={stiller.ustLinkSatiri}>
-              <Text style={stiller.cuzdan}>👛 {paraYaz(oyunDurumu.para)}</Text>
-              <Pressable onPress={() => setSahne("envanter")}><Text style={stiller.envanterLinkYazi}>Envanterim{bildirimSayisi > 0 ? ` ${bildirimSayisi}` : ""}</Text></Pressable>
+        {ustGosterge("Depo Oyunu")}
+
+        <ImageBackground source={ekranGorselleri.ana} imageStyle={stiller.gorselPanelResim} style={[stiller.anaSahnePaneli, stiller.gorselPanel]}>
+          <View style={stiller.anaSahneSol}>
+            <Text style={stiller.anaMarka}>Günün Planı</Text>
+            <Text style={stiller.anaSlogan}>Bugün {oyunDurumu.pazarHaberi.baslik.toLocaleLowerCase("tr-TR")} etkili. {oyunDurumu.pazarHaberi.etki ?? "Piyasa dengeli ilerliyor."}</Text>
+            <View style={stiller.anaDurumSeridi}>
+              <Text style={stiller.anaDurumMetni}>{oyunDurumu.pazarHaberi.baslik}</Text>
             </View>
-            <Text style={stiller.anaGunYazi}>{tarihYaz(oyunDurumu.gun)} • {saatYaz(oyunDurumu.saatDakika)}</Text>
           </View>
+        </ImageBackground>
+
+        <View style={stiller.anaAksiyonSahasi}>
+          <Pressable style={stiller.anaBirincilAksiyon} onPress={acikArtirmayaGir}>
+            <Text style={stiller.aksiyonEtiket}>CANLI SALON</Text>
+            <Text style={stiller.aksiyonBaslik}>Depo Pazarı</Text>
+            <Text style={stiller.aksiyonYazi}>Kalabalığa gir, rakipleri oku, doğru anda teklif ver.</Text>
+          </Pressable>
+          <Pressable style={stiller.anaIkincilAksiyon} onPress={urunPazarinaGir}>
+            <Text style={stiller.aksiyonEtiket}>GİZLİ FİYAT</Text>
+            <Text style={stiller.aksiyonBaslik}>Ürün Pazarı</Text>
+            <Text style={stiller.aksiyonYazi}>Tek ürün avla, satıcıyı ikna et, kasayı büyüt.</Text>
+          </Pressable>
         </View>
 
-        <View style={stiller.istatistikSatiriYeni}>
-          <View style={stiller.istatistikKartiYeni}><Text style={stiller.istatistikIkon}>🏗️</Text><Text style={stiller.istatistikSayi} numberOfLines={1} adjustsFontSizeToFit>{acilmisDepoSayisi}</Text><Text style={stiller.istatistikYazi}>Açtığın Depolar</Text></View>
-          <View style={stiller.istatistikKartiYeni}><Text style={stiller.istatistikIkon}>{karZarar >= 0 ? "📈" : "📉"}</Text><Text style={[stiller.istatistikSayi, { color: karZarar >= 0 ? "#178f5f" : "#d94b4b" }]} numberOfLines={1} adjustsFontSizeToFit>{paraYaz(karZarar)}</Text><Text style={stiller.istatistikYazi}>Kâr / Zarar</Text></View>
-          <View style={stiller.istatistikKartiYeni}><Text style={stiller.istatistikIkon}>🏢</Text><Text style={stiller.istatistikSayi} numberOfLines={1} adjustsFontSizeToFit>{sahipDepoSayisi}</Text><Text style={stiller.istatistikYazi}>Sahip Depolar</Text></View>
+        <View style={stiller.anaPanelSeridi}>
+          <View style={stiller.anaPanelSatiri}><Text style={stiller.anaPanelEtiket}>Kâr / Zarar</Text><Text style={[stiller.anaPanelDeger, { color: karZarar >= 0 ? "#178f5f" : "#d94b4b" }]}>{paraYaz(karZarar)}</Text></View>
+          <View style={stiller.anaPanelSatiri}><Text style={stiller.anaPanelEtiket}>Açılan depo</Text><Text style={stiller.anaPanelDeger}>{acilmisDepoSayisi}</Text></View>
+          <View style={stiller.anaPanelSatiri}><Text style={stiller.anaPanelEtiket}>Sahip depo</Text><Text style={stiller.anaPanelDeger}>{sahipDepoSayisi}</Text></View>
         </View>
 
-        <View style={stiller.haberKarti}>
-          <View style={stiller.haberUstSatir}>
-            <View>
-              <Text style={stiller.kucukEtiket}>PİYASA HABERİ</Text>
-              <Text style={stiller.pazarBaslik}>{oyunDurumu.pazarHaberi.baslik}</Text>
-            </View>
-            <Text style={stiller.itibarRozeti}>{oyunDurumu.itibar}/100</Text>
+        <View style={stiller.piyasaBandi}>
+          <View style={stiller.piyasaNokta} />
+          <View style={stiller.esnekAlan}>
+            <Text style={stiller.piyasaBaslik}>{oyunDurumu.pazarHaberi.baslik}</Text>
+            <Text style={stiller.piyasaYazi}>{oyunDurumu.pazarHaberi.aciklama}</Text>
+            <Text style={stiller.piyasaEtkiYazi}>{oyunDurumu.pazarHaberi.etki ?? "Bugün özel bir piyasa etkisi yok."}</Text>
           </View>
-          <Text style={stiller.pazarYazi}>{oyunDurumu.pazarHaberi.aciklama}</Text>
-          <Text style={stiller.mesajYeni}>İtibar: {itibarMetni}. İyi itibar daha güçlü teklif getirir.</Text>
-        </View>
-
-        <View style={stiller.pazarKarti}>
-          <Text style={stiller.pazarBaslik}>Depo Pazarı</Text>
-          <Text style={stiller.pazarYazi}>Canlı kalabalık, akıllı rakipler ve kapalı kutular. İçeri girince gerçekten açık artırmadaymış gibi teklif ver.</Text>
-          <Pressable style={stiller.pazarButonu} onPress={acikArtirmayaGir}><Text style={stiller.pazarButonuYazi}>Açık Artırmaya Gir</Text></Pressable>
-          <Text style={stiller.mesajYeni}>{sonMesaj}</Text>
-        </View>
-
-        <View style={stiller.urunPazariAnaKarti}>
-          <View style={stiller.urunPazariAnaUst}>
-            <View>
-              <Text style={stiller.kucukEtiket}>YENİ PAZAR</Text>
-              <Text style={stiller.pazarBaslik}>Ürün Pazarı</Text>
-            </View>
-            <Text style={stiller.gizliRozet}>Gizli fiyat</Text>
-          </View>
-          <Text style={stiller.pazarYazi}>Depo almadan tek ürün kovala. Ürünü gör, fiyatı görme; satıcıyı ikna edecek teklifi yaz.</Text>
-          <Pressable style={stiller.urunPazarButonu} onPress={urunPazarinaGir}><Text style={stiller.pazarButonuYazi}>Ürünlere Bak</Text></Pressable>
         </View>
 
         <Pressable style={stiller.sifirlaAltButonu} onPress={oyunuSifirla}><Text style={stiller.sifirlaYazi}>Oyunu Sıfırla</Text></Pressable>
@@ -1693,8 +2237,111 @@ export default function AnaOyunEkrani() {
 }
 
 const stiller = StyleSheet.create({
-  ekranAcik: { flex: 1, backgroundColor: "#f8f2e8" },
+  ekranAcik: { flex: 1, backgroundColor: "#15120f" },
   sayfaIci: { padding: 18, paddingBottom: 32 },
+  gorselPanel: { backgroundColor: "#15120f", overflow: "hidden" },
+  gorselPanelResim: { borderRadius: 8, opacity: 0.54 },
+  ustHud: { backgroundColor: "#15120f", borderColor: "#8f6a38", borderRadius: 8, borderWidth: 1, gap: 12, marginBottom: 16, overflow: "hidden", padding: 12 },
+  ustHudResim: { borderRadius: 8, opacity: 0.72 },
+  ustHudBaslikSatiri: { alignItems: "center", flexDirection: "row", gap: 12 },
+  hudProfilButonu: { alignItems: "center", backgroundColor: "rgba(255, 248, 233, 0.94)", borderColor: "#f0c26b", borderRadius: 8, borderWidth: 2, height: 46, justifyContent: "center", width: 46 },
+  hudGeriButonu: { alignItems: "center", backgroundColor: "rgba(255, 248, 233, 0.94)", borderColor: "#f0c26b", borderRadius: 8, borderWidth: 1, height: 44, justifyContent: "center", paddingHorizontal: 13 },
+  hudGeriYazi: { color: "#263238", fontSize: 12, fontWeight: "900" },
+  hudBaslikOrta: { flex: 1 },
+  hudBaslik: { color: "#ffffff", fontSize: 18, fontWeight: "900" },
+  hudTarih: { color: "#f0c26b", fontSize: 12, fontWeight: "800", marginTop: 2 },
+  hudRutbeAlani: { alignItems: "flex-end", maxWidth: 116 },
+  hudRutbeEtiket: { color: "#b9aa92", fontSize: 9, fontWeight: "900" },
+  hudRutbeYazi: { color: "#f0c26b", fontSize: 12, fontWeight: "900", marginTop: 3, textAlign: "right" },
+  hudBilgiSatiri: { flexDirection: "row", gap: 8 },
+  hudBilgiPili: { backgroundColor: "rgba(255, 248, 233, 0.9)", borderRadius: 8, flex: 1, minHeight: 54, paddingHorizontal: 9, paddingVertical: 8 },
+  hudEnvanterPili: { borderColor: "#c99a55", borderWidth: 1 },
+  hudKilitli: { opacity: 0.48 },
+  hudBilgiEtiket: { color: "#786e73", fontSize: 10, fontWeight: "900" },
+  hudBilgiDeger: { color: "#25324a", fontSize: 12, fontWeight: "900", marginTop: 4 },
+  hudEnvanterSayacSatiri: { alignItems: "center", flexDirection: "row", gap: 5, marginTop: 4 },
+  hudEnvanterSayac: { color: "#25324a", flex: 1, fontSize: 11, fontWeight: "900" },
+  hudEnvanterAyirici: { color: "#c99a55", fontSize: 11, fontWeight: "900" },
+  hudTeklifUyari: { color: "#178f5f", fontSize: 9, fontWeight: "900", marginTop: 3 },
+  anaSahnePaneli: { borderColor: "#8f6a38", borderRadius: 8, borderWidth: 1, minHeight: 360, padding: 16, justifyContent: "flex-end" },
+  anaSahneSol: { backgroundColor: "rgba(21, 18, 15, 0.72)", borderColor: "rgba(240, 194, 107, 0.35)", borderRadius: 8, borderWidth: 1, padding: 14 },
+  anaMarka: { color: "#fff8e9", fontSize: 31, fontWeight: "900", letterSpacing: 0, lineHeight: 36 },
+  anaSlogan: { color: "#ead9c1", fontSize: 14, fontWeight: "800", lineHeight: 20, marginTop: 10 },
+  anaDurumSeridi: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 14 },
+  anaDurumMetni: { backgroundColor: "rgba(255, 248, 233, 0.95)", borderColor: "#c99a55", borderRadius: 8, borderWidth: 1, color: "#6a3d1b", fontSize: 11, fontWeight: "900", paddingHorizontal: 9, paddingVertical: 6 },
+  depoSiluetAlani: { alignItems: "center", alignSelf: "stretch", justifyContent: "center", width: 112 },
+  depoSiluetCati: { backgroundColor: "#e76f51", borderRadius: 8, height: 16, width: 96 },
+  depoSiluetGovde: { backgroundColor: "#d9f3ea", borderColor: "#178f5f", borderRadius: 8, borderWidth: 2, height: 124, justifyContent: "flex-end", overflow: "hidden", width: 104 },
+  depoSiluetKapi: { alignSelf: "center", backgroundColor: "#ffffff", borderColor: "#a6ddc9", borderTopLeftRadius: 8, borderTopRightRadius: 8, borderWidth: 1, height: 74, width: 54 },
+  depoSiluetKutu: { backgroundColor: "#f0c26b", borderRadius: 6, bottom: 12, height: 22, position: "absolute", right: 12, width: 28 },
+  depoSiluetKutuKucuk: { backgroundColor: "#25324a", borderRadius: 5, bottom: 38, height: 16, position: "absolute", right: 18, width: 22 },
+  anaAksiyonSahasi: { gap: 10, marginTop: 14 },
+  anaBirincilAksiyon: { backgroundColor: "#8a4f24", borderColor: "#f0c26b", borderRadius: 8, borderWidth: 1, minHeight: 118, padding: 16 },
+  anaIkincilAksiyon: { backgroundColor: "#25362f", borderColor: "#8f6a38", borderRadius: 8, borderWidth: 1, minHeight: 108, padding: 16 },
+  aksiyonEtiket: { color: "#fff8e9", fontSize: 11, fontWeight: "900", letterSpacing: 2 },
+  aksiyonBaslik: { color: "#ffffff", fontSize: 25, fontWeight: "900", marginTop: 7 },
+  aksiyonYazi: { color: "#fff8e9", fontSize: 13, fontWeight: "800", lineHeight: 18, marginTop: 6, maxWidth: 300 },
+  anaPanelSeridi: { backgroundColor: "rgba(255, 248, 233, 0.96)", borderColor: "#8f6a38", borderRadius: 8, borderWidth: 1, marginTop: 14, paddingHorizontal: 14, paddingVertical: 6 },
+  anaPanelSatiri: { alignItems: "center", borderBottomColor: "#ead7b8", borderBottomWidth: 1, flexDirection: "row", justifyContent: "space-between", minHeight: 45 },
+  anaPanelEtiket: { color: "#6f5b47", fontSize: 12, fontWeight: "900" },
+  anaPanelDeger: { color: "#241a12", fontSize: 16, fontWeight: "900" },
+  piyasaBandi: { alignItems: "center", backgroundColor: "rgba(24, 20, 17, 0.94)", borderColor: "#8f6a38", borderRadius: 8, borderWidth: 1, flexDirection: "row", gap: 12, marginTop: 14, padding: 14 },
+  piyasaNokta: { backgroundColor: "#f0c26b", borderRadius: 8, height: 38, width: 8 },
+  piyasaBaslik: { color: "#ffffff", fontSize: 16, fontWeight: "900" },
+  piyasaYazi: { color: "#d8e2e8", fontSize: 12, fontWeight: "700", lineHeight: 17, marginTop: 3 },
+  piyasaEtkiYazi: { color: "#f0c26b", fontSize: 11, fontWeight: "900", lineHeight: 16, marginTop: 5 },
+  itibarKisa: { backgroundColor: "#ffffff", borderRadius: 8, color: "#178f5f", fontSize: 17, fontWeight: "900", minWidth: 44, paddingVertical: 8, textAlign: "center" },
+  sonMesajBandi: { backgroundColor: "rgba(255, 248, 233, 0.96)", borderColor: "#8f6a38", borderRadius: 8, borderWidth: 1, marginTop: 12, padding: 12 },
+  sonMesajYazi: { color: "#4f4032", fontSize: 12, fontWeight: "800", lineHeight: 17 },
+  profilSahne: { borderColor: "#8f6a38", borderRadius: 8, borderWidth: 1, gap: 12, minHeight: 430, justifyContent: "flex-end", padding: 16 },
+  profilKimlikPaneli: { alignItems: "center", backgroundColor: "rgba(21, 18, 15, 0.72)", borderColor: "rgba(240, 194, 107, 0.35)", borderRadius: 8, borderWidth: 1, flexDirection: "row", gap: 14, padding: 12 },
+  profilRozetBuyuk: { alignItems: "center", backgroundColor: "#f0c26b", borderColor: "#ffffff", borderRadius: 8, borderWidth: 2, height: 74, justifyContent: "center", width: 74 },
+  profilUnvan: { color: "#f0c26b", fontSize: 12, fontWeight: "900", letterSpacing: 1 },
+  profilIsim: { color: "#ffffff", fontSize: 25, fontWeight: "900", marginTop: 3 },
+  profilOzet: { color: "#d8e2e8", fontSize: 12, fontWeight: "700", lineHeight: 17, marginTop: 5 },
+  itibarHatti: { backgroundColor: "#4a5961", borderRadius: 8, height: 10, overflow: "hidden" },
+  itibarDolgu: { backgroundColor: "#f0c26b", borderRadius: 8, height: "100%" },
+  profilSeviyeBilgiPaneli: { backgroundColor: "rgba(255, 248, 233, 0.94)", borderColor: "#f0c26b", borderRadius: 8, borderWidth: 1, padding: 10 },
+  profilSeviyeBilgiBaslik: { color: "#6a3d1b", fontSize: 11, fontWeight: "900" },
+  profilSeviyeBilgiYazi: { color: "#25324a", fontSize: 13, fontWeight: "900", lineHeight: 18, marginTop: 3 },
+  profilFormSatiri: { flexDirection: "row", gap: 10 },
+  profilInputYeni: { backgroundColor: "rgba(255, 248, 233, 0.96)", borderColor: "#c99a55", borderRadius: 8, borderWidth: 1, color: "#25324a", flex: 1, fontSize: 14, fontWeight: "900", minHeight: 48, paddingHorizontal: 12 },
+  profilPerformansPaneli: { backgroundColor: "rgba(255, 248, 233, 0.96)", borderColor: "#8f6a38", borderRadius: 8, borderWidth: 1, marginTop: 14, padding: 14 },
+  panelBaslikYeni: { color: "#25324a", fontSize: 19, fontWeight: "900", marginBottom: 8 },
+  profilMetrikSatiri: { alignItems: "center", borderBottomColor: "#f3e5c9", borderBottomWidth: 1, flexDirection: "row", justifyContent: "space-between", minHeight: 44 },
+  profilMetrikEtiket: { color: "#786e73", fontSize: 12, fontWeight: "900" },
+  profilMetrikDeger: { color: "#25324a", fontSize: 15, fontWeight: "900" },
+  profilMiniOzetSatiri: { flexDirection: "row", gap: 8, marginTop: 12 },
+  profilMiniOzet: { backgroundColor: "#fff8e9", borderColor: "#efd7a7", borderRadius: 8, borderWidth: 1, flex: 1, minHeight: 68, padding: 10 },
+  profilBasarimKarti: { backgroundColor: "rgba(24, 20, 17, 0.94)", borderColor: "#f0c26b", borderRadius: 8, borderWidth: 1, gap: 10, marginTop: 14, padding: 14 },
+  profilBasarimBaslik: { color: "#fff8e9", fontSize: 19, fontWeight: "900", marginTop: 3 },
+  profilBasarimYazi: { color: "#ead9c1", fontSize: 12, fontWeight: "800", lineHeight: 17 },
+  basarimHeroPaneli: { backgroundColor: "rgba(24, 20, 17, 0.94)", borderColor: "#8f6a38", borderRadius: 8, borderWidth: 1, gap: 12, padding: 16 },
+  basarimHeroUstSatir: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", gap: 12 },
+  seviyeRozeti: { alignItems: "center", backgroundColor: "#f0c26b", borderColor: "#fff8e9", borderRadius: 8, borderWidth: 1, minWidth: 70, paddingHorizontal: 10, paddingVertical: 8 },
+  seviyeRozetiYazi: { color: "#25324a", fontSize: 15, fontWeight: "900" },
+  basarimOzetYazi: { color: "#ead9c1", fontSize: 13, fontWeight: "800", lineHeight: 18 },
+  expHatti: { backgroundColor: "#3b332c", borderRadius: 8, height: 14, overflow: "hidden" },
+  expHattiProfil: { backgroundColor: "#3b332c", borderRadius: 8, height: 11, overflow: "hidden" },
+  expDolgu: { backgroundColor: "#f0c26b", borderRadius: 8, height: "100%" },
+  expAltYazi: { color: "#f0c26b", fontSize: 11, fontWeight: "900" },
+  basarimListe: { gap: 10, marginTop: 14 },
+  basarimKarti: { backgroundColor: "rgba(255, 248, 233, 0.96)", borderColor: "#8f6a38", borderRadius: 8, borderWidth: 1, padding: 12 },
+  basarimKartiAcik: { borderColor: "#178f5f" },
+  basarimKartiKilitli: { opacity: 0.82 },
+  basarimKartiUstSatir: { alignItems: "center", flexDirection: "row", gap: 10, justifyContent: "space-between" },
+  basarimIcon: { alignItems: "center", backgroundColor: "#25324a", borderRadius: 8, height: 38, justifyContent: "center", width: 38 },
+  basarimIconAcik: { backgroundColor: "#178f5f" },
+  basarimIconYazi: { color: "#ffffff", fontSize: 18, fontWeight: "900" },
+  basarimBaslik: { color: "#25324a", fontSize: 15, fontWeight: "900" },
+  basarimAciklama: { color: "#786e73", fontSize: 12, fontWeight: "700", lineHeight: 17, marginTop: 3 },
+  basarimDurum: { backgroundColor: "#e8ded0", borderRadius: 8, color: "#6f5b47", fontSize: 10, fontWeight: "900", overflow: "hidden", paddingHorizontal: 8, paddingVertical: 5 },
+  basarimDurumAcik: { backgroundColor: "#d9f3ea", color: "#178f5f" },
+  basarimIlerlemeHatti: { backgroundColor: "#e8ded0", borderRadius: 8, height: 9, marginTop: 12, overflow: "hidden" },
+  basarimIlerlemeDolgu: { backgroundColor: "#178f5f", borderRadius: 8, height: "100%" },
+  basarimAltSatir: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", gap: 10, marginTop: 8 },
+  basarimIlerlemeYazi: { color: "#25324a", fontSize: 11, fontWeight: "900" },
+  basarimOdulYazi: { color: "#8a4f24", fontSize: 11, fontWeight: "900", textAlign: "right" },
   profilSatiri: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", marginBottom: 14 },
   profilButonu: { alignItems: "center", backgroundColor: "#ffffff", borderColor: "#f0c26b", borderRadius: 24, borderWidth: 2, height: 48, justifyContent: "center", width: 48 },
   profilHarf: { color: "#25324a", fontSize: 16, fontWeight: "900" },
@@ -1713,7 +2360,7 @@ const stiller = StyleSheet.create({
   kisaBilgiEtiket: { color: "#786e73", fontSize: 11, fontWeight: "900" },
   kisaBilgiDeger: { color: "#25324a", fontSize: 15, fontWeight: "900", marginTop: 6 },
   kisaEnvanterYazi: { color: "#178f5f", fontSize: 15, fontWeight: "900", marginTop: 6 },
-  kucukEtiket: { color: "#e76f51", fontSize: 12, fontWeight: "900", letterSpacing: 2, textAlign: "center" },
+  kucukEtiket: { color: "#f0c26b", fontSize: 12, fontWeight: "900", letterSpacing: 2, textAlign: "center" },
   anaLogo: { color: "#25324a", fontSize: 34, fontWeight: "900", letterSpacing: 0, marginTop: 6, textAlign: "center" },
   anaAltYazi: { color: "#6d6470", fontSize: 14, fontWeight: "700", lineHeight: 20, marginTop: 8, textAlign: "center" },
   istatistikSatiriYeni: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 14 },
@@ -1773,8 +2420,8 @@ const stiller = StyleSheet.create({
   kaliteSeviyeAdim: { backgroundColor: "#f3e5c9", borderRadius: 8, height: 8, width: 34 },
   kaliteSeviyeAdimAktif: { backgroundColor: "#178f5f" },
   kaliteEtkiYazi: { color: "#786e73", fontSize: 11, fontWeight: "800", marginTop: 6 },
-  buyukBaslik: { color: "#25324a", fontSize: 30, fontWeight: "900", letterSpacing: 0, marginTop: 5, textAlign: "center" },
-  heroAlt: { color: "#6d6470", fontSize: 13, fontWeight: "800", lineHeight: 18, marginTop: 7, textAlign: "center" },
+  buyukBaslik: { color: "#fff8e9", fontSize: 30, fontWeight: "900", letterSpacing: 0, marginTop: 5, textAlign: "center" },
+  heroAlt: { color: "#ead9c1", fontSize: 13, fontWeight: "800", lineHeight: 18, marginTop: 7, textAlign: "center" },
   sayacKarti: { backgroundColor: "#ffffff", borderColor: "#efd7a7", borderRadius: 8, borderWidth: 1, marginTop: 14, padding: 12 },
   sayacEtiket: { color: "#786e73", fontSize: 11, fontWeight: "900", textAlign: "center" },
   sayacDeger: { color: "#178f5f", fontSize: 28, fontWeight: "900", marginTop: 2, textAlign: "center" },
@@ -1914,5 +2561,37 @@ const stiller = StyleSheet.create({
   satilmisSatiri: { alignItems: "center", flexDirection: "row", gap: 8, marginTop: 8 },
   satildiSilButonu: { alignItems: "center", backgroundColor: "#25324a", borderRadius: 8, justifyContent: "center", minHeight: 30, paddingHorizontal: 10 },
   satildiSilYazi: { color: "#ffffff", fontSize: 10, fontWeight: "900" },
+  sohbetSayfasi: { borderColor: "#8f6a38", borderRadius: 8, borderWidth: 1, gap: 12, minHeight: 680, padding: 12 },
+  sohbetUrunBasligi: { alignItems: "center", backgroundColor: "rgba(255, 255, 255, 0.94)", borderColor: "#d7c7a7", borderRadius: 8, borderWidth: 1, flexDirection: "row", gap: 10, padding: 10 },
+  sohbetUrunIkon: { alignItems: "center", backgroundColor: "#f6efe1", borderColor: "#d7c7a7", borderRadius: 8, borderWidth: 1, height: 54, justifyContent: "center", width: 58 },
+  sohbetUrunAdi: { color: "#1f2b32", fontSize: 16, fontWeight: "900" },
+  sohbetUrunAlt: { color: "#66766f", fontSize: 12, fontWeight: "800", marginTop: 3 },
+  sohbetKisiSeridi: { flexDirection: "row", gap: 8 },
+  sohbetKisiPili: { alignItems: "center", backgroundColor: "rgba(255, 255, 255, 0.92)", borderColor: "#d7c7a7", borderRadius: 8, borderWidth: 1, flexDirection: "row", gap: 8, minWidth: 128, padding: 8 },
+  sohbetKisiPiliAktif: { backgroundColor: "#e8f7ee", borderColor: "#23a15f", borderWidth: 2 },
+  sohbetAvatar: { alignItems: "center", borderRadius: 18, height: 36, justifyContent: "center", width: 36 },
+  sohbetKisiAdi: { color: "#1f2b32", fontSize: 12, fontWeight: "900" },
+  sohbetKisiDurum: { color: "#66766f", fontSize: 10, fontWeight: "800", marginTop: 2 },
+  sohbetTelefonPaneli: { backgroundColor: "#e7f4ea", borderColor: "#c7ddd0", borderRadius: 8, borderWidth: 1, overflow: "hidden" },
+  sohbetBaslikSatiri: { alignItems: "center", backgroundColor: "#f8fff9", borderBottomColor: "#d4e8dc", borderBottomWidth: 1, flexDirection: "row", gap: 10, padding: 10 },
+  sohbetBaslik: { color: "#1f2b32", fontSize: 15, fontWeight: "900" },
+  sohbetAltBaslik: { color: "#23a15f", fontSize: 11, fontWeight: "800", marginTop: 2 },
+  mesajAlani: { gap: 8, minHeight: 280, padding: 10 },
+  mesajBalonu: { alignSelf: "flex-start", backgroundColor: "#ffffff", borderRadius: 8, maxWidth: "86%", paddingHorizontal: 11, paddingVertical: 8 },
+  mesajBalonuBen: { alignSelf: "flex-end", backgroundColor: "#d8f7c8" },
+  mesajBalonuSistem: { alignSelf: "center", backgroundColor: "#f1ede3" },
+  mesajMetni: { color: "#1f2b32", fontSize: 13, fontWeight: "700", lineHeight: 18 },
+  yaziyorYazi: { alignSelf: "flex-start", color: "#66766f", fontSize: 12, fontWeight: "800", marginLeft: 8 },
+  sohbetTeklifSatiri: { alignItems: "center", backgroundColor: "#f8fff9", borderTopColor: "#d4e8dc", borderTopWidth: 1, flexDirection: "row", gap: 8, padding: 9 },
+  sohbetInput: { backgroundColor: "#ffffff", borderColor: "#c7ddd0", borderRadius: 8, borderWidth: 1, color: "#1f2b32", flex: 1, fontSize: 15, fontWeight: "900", minHeight: 42, paddingHorizontal: 10 },
+  sohbetGonderButonu: { alignItems: "center", backgroundColor: "#23a15f", borderRadius: 8, justifyContent: "center", minHeight: 42, paddingHorizontal: 12 },
+  sohbetGonderYazi: { color: "#ffffff", fontSize: 12, fontWeight: "900" },
+  sohbetAksiyonSatiri: { backgroundColor: "#f8fff9", flexDirection: "row", flexWrap: "wrap", gap: 8, padding: 9, paddingTop: 0 },
+  sohbetAksiyonButonu: { alignItems: "center", backgroundColor: "#ffffff", borderColor: "#23a15f", borderRadius: 8, borderWidth: 1, flexGrow: 1, justifyContent: "center", minHeight: 38, paddingHorizontal: 9 },
+  sohbetAksiyonYazi: { color: "#16834b", fontSize: 11, fontWeight: "900" },
+  sohbetKabulButonu: { alignItems: "center", backgroundColor: "#23a15f", borderRadius: 8, flexGrow: 1, justifyContent: "center", minHeight: 38, paddingHorizontal: 9 },
+  sohbetKabulYazi: { color: "#ffffff", fontSize: 11, fontWeight: "900" },
+  sohbetEngelButonu: { alignItems: "center", backgroundColor: "#fff4ef", borderColor: "#ef6f4d", borderRadius: 8, borderWidth: 1, flexGrow: 1, justifyContent: "center", minHeight: 38, paddingHorizontal: 9 },
+  sohbetEngelYazi: { color: "#d15336", fontSize: 11, fontWeight: "900" },
   pazarTeklifPaneli: { backgroundColor: "#d9f3ea", borderColor: "#a6ddc9", borderRadius: 8, borderWidth: 1, marginTop: 8, padding: 8 }
 });

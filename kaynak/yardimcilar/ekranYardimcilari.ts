@@ -83,6 +83,18 @@ export function haberCarpani(urun: EnvanterUrunu, haber: PazarHaberi) {
   return haber.hedefNadirlik === "tum" || haber.hedefNadirlik === urun.nadirlik ? haber.carpani : 1;
 }
 
+export function haberTeklifCarpani(urun: EnvanterUrunu, haber: PazarHaberi) {
+  return haberCarpani(urun, haber) * (haber.pazarTeklifCarpani ?? 1);
+}
+
+export function haberBeklemeSaniyesi(minimum: number, maksimum: number, haber: PazarHaberi) {
+  return Math.max(8, sayiArasi(minimum, maksimum) + (haber.musteriBeklemeBonus ?? 0));
+}
+
+export function haberMusteriGelmeSansi(temelSans: number, haber: PazarHaberi) {
+  return Math.min(0.12, temelSans * (haber.musteriGelmeCarpani ?? 1));
+}
+
 export function oyunuDuzenle(kayitliDurum: Partial<OyunDurumu>): OyunDurumu {
   return {
     ...ilkOyunDurumu,
@@ -108,8 +120,17 @@ export function oyunuDuzenle(kayitliDurum: Partial<OyunDurumu>): OyunDurumu {
       ...ilkOyunDurumu.kredi,
       ...(kayitliDurum.kredi ?? {})
     },
-    pazarSatislari: kayitliDurum.pazarSatislari ?? [],
+    pazarSatislari: (kayitliDurum.pazarSatislari ?? []).map((satis) => ({
+      ...satis,
+      sohbetler: satis.sohbetler ?? []
+    })),
     itibar: kayitliDurum.itibar ?? ilkOyunDurumu.itibar,
+    exp: kayitliDurum.exp ?? ilkOyunDurumu.exp,
+    acilanBasarimlar: kayitliDurum.acilanBasarimlar ?? [],
+    istatistik: {
+      ...ilkOyunDurumu.istatistik,
+      ...(kayitliDurum.istatistik ?? {})
+    },
     pazarHaberi: kayitliDurum.pazarHaberi ?? pazarHaberiOlustur(kayitliDurum.gun ?? 1)
   };
 }
@@ -142,11 +163,13 @@ export function depoIsmiOlustur() {
   return `${depoOnAdlari[sayiArasi(0, depoOnAdlari.length - 1)]} ${depoTurleri[sayiArasi(0, depoTurleri.length - 1)]}`;
 }
 
-export function pazarDepolariOlustur() {
+export function pazarDepolariOlustur(haber?: PazarHaberi) {
   return Array.from({ length: 4 }, (_, index) => {
     const { urunler } = depoUrunleriOlustur();
     const degerTahmini = urunler.reduce((toplam, urun) => toplam + urun.deger, 0);
-    const baslangicTeklifi = Math.max(35, Math.round(degerTahmini * sayiArasi(7, 14) / 100));
+    const baslangicCarpani = haber?.acikArtirmaBaslangicCarpani ?? 1;
+    const talepCarpani = haber?.acikArtirmaTalepCarpani ?? 1;
+    const baslangicTeklifi = Math.max(25, Math.round(degerTahmini * sayiArasi(7, 14) / 100 * baslangicCarpani));
     const zorluk = zorlukSec();
 
     return {
@@ -156,19 +179,20 @@ export function pazarDepolariOlustur() {
       durum: depoDurumlari[sayiArasi(0, depoDurumlari.length - 1)],
       urunler: urunler.map((urun) => ({ ...urun, goruldu: false, satildi: false })),
       baslangicTeklifi,
-      katilimciSayisi: sayiArasi(3, 18),
+      katilimciSayisi: Math.max(2, Math.min(24, Math.round(sayiArasi(3, 18) * talepCarpani))),
       zorluk,
       sureSaniye: sayiArasi(60, 300)
     } satisfies PazarDeposu;
   });
 }
 
-export function urunPazariOlustur() {
+export function urunPazariOlustur(haber?: PazarHaberi) {
   const { urunler } = depoUrunleriOlustur();
 
   return urunler.slice(0, 5).map((urun, index) => {
     const kabulCarpani = urun.nadirlik === "cop" ? 0.45 : urun.nadirlik === "normal" ? 0.58 : urun.nadirlik === "iyi" ? 0.68 : 0.78;
-    const kabulFiyati = Math.max(1, Math.round(urun.deger * kabulCarpani));
+    const haberFiyatCarpani = haber?.urunPazariFiyatCarpani ?? 1;
+    const kabulFiyati = Math.max(1, Math.round(urun.deger * kabulCarpani * haberFiyatCarpani));
     const saticiRolu = saticiRolleri[sayiArasi(0, saticiRolleri.length - 1)];
 
     return {
