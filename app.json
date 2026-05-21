@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "Storage Empire",
+    "slug": "storage-empire",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.mayflysystems.storageempire"
+    }
+  }
+}
